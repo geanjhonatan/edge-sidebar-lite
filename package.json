@@ -1,14 +1,14 @@
 {
   "name": "edge-sidebar-lite",
-  "version": "0.2.0",
-  "description": "Independent Windows 10 sidebar inspired by the old Microsoft Edge sidebar.",
+  "version": "0.3.0",
+  "description": "Windows sidebar com escolha de navegador para links externos",
   "main": "src/main.js",
   "type": "commonjs",
   "scripts": {
     "start": "electron .",
     "check": "node --check src/main.js && node --check src/preload.js && node --check src/renderer/app.js",
     "dist:win": "electron-builder --win nsis",
-    "test": "node test/layout.test.js && node test/appbar.test.js"
+    "test": "node test/layout.test.js && node test/appbar.test.js && node test/browser-links.test.js"
   },
   "build": {
     "appId": "com.geanr.edgesidebarlite",
@@ -28,20 +28,22 @@
             "x64"
           ]
         }
-      ]
+      ],
+      "signAndEditExecutable": false
     },
     "nsis": {
       "oneClick": false,
       "perMachine": false,
-      "allowToChangeInstallationDirectory": true
-    }
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true,
+      "shortcutName": "Edge Sidebar Lite"
+    },
+    "artifactName": "${productName}-Setup-${version}-${arch}.${ext}"
   },
   "devDependencies": {
-    "electron": "30.5.1",
-    "electron-builder": "24.13.3"
-  },
-  "allowScripts": {
-    "electron@30.5.1": true
+    "electron": "44.7.1",
+    "electron-builder": "26.17.0"
   },
   "optionalDependencies": {
     "koffi": "^3.3.3"
