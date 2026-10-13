@@ -27,6 +27,8 @@ O **Edge Sidebar Lite** permite acessar sites e ferramentas em um painel lateral
 - 🗂️ **Ícone na bandeja:** o aplicativo pode ser ocultado e reaberto pela área de notificação.
 
 ## 📸 Capturas de tela
+<img width="732" height="1031" alt="Screenshot 2026-10-13 170219" src="https://github.com/user-attachments/assets/173a5647-83c7-404f-876e-364d760c267c" />
+<img width="731" height="1028" alt="Screenshot 2026-10-13 170239" src="https://github.com/user-attachments/assets/7143d06e-df63-4e68-a0d7-b09cd7141144" />
 
 As capturas do aplicativo serão adicionadas em uma próxima atualização.
 
