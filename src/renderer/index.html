@@ -1,0 +1,121 @@
+<!doctype html>
+<html lang="pt-BR">
+  <head>
+    <meta charset="UTF-8" />
+    <meta http-equiv="Content-Security-Policy" content="default-src 'self'; style-src 'self' 'unsafe-inline'; script-src 'self'; img-src 'self' data: file:; font-src 'self' data:; connect-src 'self';" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Edge Sidebar Lite</title>
+    <link rel="stylesheet" href="./styles.css" />
+  </head>
+  <body>
+    <div id="app" class="shell side-right expanded">
+      <section class="panel-placeholder">
+        <nav class="navigation-toolbar" aria-label="Navegação do site">
+          <button id="backButton" class="navigation-button" type="button" title="Voltar" aria-label="Voltar" disabled>‹</button>
+          <button id="forwardButton" class="navigation-button" type="button" title="Avançar" aria-label="Avançar" disabled>›</button>
+          <button id="reloadButton" class="navigation-button" type="button" title="Recarregar" aria-label="Recarregar">↻</button>
+          <span id="navigationAddress" class="navigation-address" title="Endereço atual">Carregando…</span>
+        </nav>
+        <div class="panel-backdrop">
+          <div class="panel-copy">
+            <span class="panel-eyebrow">Edge Sidebar Lite</span>
+            <strong id="panelTitle">ChatGPT</strong>
+            <p id="panelHint">Painel ativo pronto para uso.</p>
+          </div>
+        </div>
+      </section>
+
+      <div id="resizeHandle" class="resize-handle" title="Arraste para redimensionar" aria-label="Redimensionar painel"></div>
+
+      <aside class="sidebar">
+        <div class="window-drag-handle" title="Arraste para mover a janela independente" aria-hidden="true"><span></span></div>
+        <div class="control-group top-controls">
+          <button id="pinButton" class="icon-button" type="button" title="Sempre no topo" aria-label="Sempre no topo">📌</button>
+          <button id="dockButton" class="icon-button" type="button" title="Fixar / soltar janela" aria-label="Fixar ou soltar janela">▣</button>
+          <button id="switchSideButton" class="icon-button" type="button" title="Alterar lado da barra" aria-label="Alterar lado da barra">⇆</button>
+          <button id="settingsButton" class="icon-button" type="button" title="Configurações" aria-label="Configurações">⚙</button>
+          <button id="toggleButton" class="icon-button" type="button" title="Expandir ou recolher" aria-label="Expandir ou recolher">⟨</button>
+          <button id="hideButton" class="icon-button danger" type="button" title="Ocultar na bandeja" aria-label="Ocultar na bandeja">✕</button>
+        </div>
+
+        <div id="siteButtons" class="site-buttons"></div>
+
+        <div class="control-group bottom-controls">
+          <button id="addSiteButton" class="icon-button accent" type="button" title="Adicionar site" aria-label="Adicionar site">＋</button>
+        </div>
+
+        <div class="sidebar-footer">
+          <span id="statusText" class="status-text">Carregando</span>
+        </div>
+      </aside>
+    </div>
+
+    <section id="settingsPanel" class="settings-panel hidden" aria-hidden="true">
+      <div class="settings-card">
+        <div class="settings-header">
+          <div>
+            <span class="panel-eyebrow">Configurações</span>
+            <h1>Barra e sites</h1>
+          </div>
+          <button id="closeSettingsButton" class="icon-button" type="button" aria-label="Fechar configurações">✕</button>
+        </div>
+
+        <form id="settingsForm" class="settings-form" novalidate>
+          <div class="settings-grid">
+            <label class="toggle-row">
+              <span>Sempre no topo</span>
+              <input id="alwaysOnTopInput" type="checkbox" />
+            </label>
+
+            <label class="toggle-row">
+              <span>Fixar na borda do monitor (altura total)</span>
+              <input id="dockedInput" type="checkbox" />
+            </label>
+
+            <label class="toggle-row">
+              <span>Reservar espaço no Windows ao fixar a barra</span>
+              <input id="reserveSpaceInput" type="checkbox" />
+            </label>
+            <p class="setting-note">Com a barra fixada, o Windows reserva espaço para as outras janelas. No modo flutuante não há reserva.</p>
+            <p id="appBarFeedback" class="setting-note" role="status"></p>
+            <label class="inline-field">
+              <span>Lado da barra</span>
+              <select id="sideInput">
+                <option value="left">Esquerda</option>
+                <option value="right">Direita</option>
+              </select>
+            </label>
+
+            <div class="range-field">
+              <div class="range-label-row">
+                <span>Largura do painel</span>
+                <strong id="panelWidthValue">420 px</strong>
+              </div>
+              <input id="panelWidthRange" type="range" />
+              <input id="panelWidthNumber" type="number" min="320" step="1" />
+            </div>
+          </div>
+
+          <div class="sites-header-row">
+            <div>
+              <span class="panel-eyebrow">Sites</span>
+              <strong>Atalhos ilimitados</strong>
+            </div>
+            <button id="addSiteInSettingsButton" class="secondary-button" type="button">Adicionar site</button>
+          </div>
+
+          <div id="settingsSites" class="settings-sites"></div>
+
+          <p id="settingsMessage" class="settings-message" role="status"></p>
+
+          <div class="settings-actions">
+            <button id="cancelSettingsButton" class="secondary-button" type="button">Cancelar</button>
+            <button class="primary-button" type="submit">Salvar</button>
+          </div>
+        </form>
+      </div>
+    </section>
+
+    <script src="./app.js"></script>
+  </body>
+</html>

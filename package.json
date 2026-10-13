@@ -1,0 +1,49 @@
+{
+  "name": "edge-sidebar-lite",
+  "version": "0.2.0",
+  "description": "Independent Windows 10 sidebar inspired by the old Microsoft Edge sidebar.",
+  "main": "src/main.js",
+  "type": "commonjs",
+  "scripts": {
+    "start": "electron .",
+    "check": "node --check src/main.js && node --check src/preload.js && node --check src/renderer/app.js",
+    "dist:win": "electron-builder --win nsis",
+    "test": "node test/layout.test.js && node test/appbar.test.js"
+  },
+  "build": {
+    "appId": "com.geanr.edgesidebarlite",
+    "productName": "Edge Sidebar Lite",
+    "directories": {
+      "output": "dist"
+    },
+    "files": [
+      "src/**/*",
+      "package.json"
+    ],
+    "win": {
+      "target": [
+        {
+          "target": "nsis",
+          "arch": [
+            "x64"
+          ]
+        }
+      ]
+    },
+    "nsis": {
+      "oneClick": false,
+      "perMachine": false,
+      "allowToChangeInstallationDirectory": true
+    }
+  },
+  "devDependencies": {
+    "electron": "30.5.1",
+    "electron-builder": "24.13.3"
+  },
+  "allowScripts": {
+    "electron@30.5.1": true
+  },
+  "optionalDependencies": {
+    "koffi": "^3.3.3"
+  }
+}
