@@ -22,6 +22,7 @@ fs.writeFileSync(config, JSON.stringify({
 let windowInstance;
 const sentMessages = [];
 const ipc = new Map();
+const linkDialogs = [];
 const screen = new EventEmitter();
 const display = { id: 1, workArea: { x: 0, y: 0, width: 1920, height: 1040 } };
 screen.getPrimaryDisplay = () => display;
@@ -80,7 +81,7 @@ class MockView {
     this.webContents = new EventEmitter();
     this.webContents.isDestroyed = () => false;
     this.webContents.destroy = () => {};
-    this.webContents.setWindowOpenHandler = () => {};
+    this.webContents.setWindowOpenHandler = (handler) => { this.webContents.windowOpenHandler = handler; };
     const wc = this.webContents;
     wc.entries = [];
     wc.index = -1;
@@ -118,14 +119,17 @@ const electron = {
   ipcMain: { handle: (key, fn) => ipc.set(key, fn) }, nativeImage: {
     createFromDataURL: () => fakeImage,
     createFromBuffer: () => fakeImage
-  }, screen, session
+  }, screen, session,
+  dialog: { showMessageBox: async (_window, opts) => { linkDialogs.push(opts); return { response: opts.cancelId }; } },
+  shell: { openExternal: async () => {} },
+  clipboard: { writeText() {} }
 };
 const sourcePath = path.join(__dirname, '..', 'src', 'main.js');
 const capturedErrors = [];
 const sandbox = {
-  require: (name) => name === 'electron' ? electron : (name === './windows-appbar' ? require(path.join(__dirname, '..', 'src', 'windows-appbar.js')) : require(name)),
+  require: (name) => name === 'electron' ? electron : (name === './windows-appbar' ? require(path.join(__dirname, '..', 'src', 'windows-appbar.js')) : (name === './browser-links' ? require(path.join(__dirname, '..', 'src', 'browser-links.js')) : require(name))),
   __dirname: path.dirname(sourcePath),
-  Buffer, URL, console: { ...console, error: (...args) => capturedErrors.push(args.join(" ")) }, setTimeout, clearTimeout,
+  Buffer, URL, console: { ...console, error: (...args) => capturedErrors.push(args.join(" ")) }, setTimeout, clearTimeout, setImmediate,
   process: { on() {} },
   fetch: async () => ({ ok: false })
 };
@@ -153,6 +157,16 @@ async function invoke(channel, ...args) {
     assert.equal(windowInstance.children[0].bounds.y, 46, 'reservar espaço clicável para a navegação');
     assert.equal(windowInstance.children[0].bounds.height, 674);
 
+    // Links que pedem nova aba agora acionam o seletor nativo com consentimento.
+    const newWindow = windowInstance.children[0].webContents.windowOpenHandler;
+    assert.equal(newWindow({ url: 'https://github.com/openai/' }).action, 'deny');
+    await new Promise((resolve) => setTimeout(resolve, 15));
+    assert.equal(linkDialogs.length, 1);
+    assert.match(linkDialogs[0].message, /Onde você quer abrir/);
+    assert.ok(linkDialogs[0].buttons.includes('Navegador padrão'));
+    assert.equal(newWindow({ url: 'javascript:alert(1)' }).action, 'deny');
+    await new Promise((resolve) => setTimeout(resolve, 15));
+    assert.equal(linkDialogs.length, 1, 'protocolo inseguro não abre seletor');
     // Navegação da própria view (não compartilha histórico entre sites).
     const chatWc = windowInstance.children[0].webContents;
     assert.equal(readState().navigation.canGoBack, false);
@@ -230,6 +244,7 @@ async function invoke(channel, ...args) {
     const html = fs.readFileSync(path.join(__dirname, '..', 'src', 'renderer', 'index.html'), 'utf8');
     assert.match(html, /id="dockedInput"/);
     assert.match(html, /id="reserveSpaceInput"/);
+    assert.match(html, /id="startWithWindowsInput"/);
     assert.match(html, /step="1"/);
     for (const id of ['backButton', 'forwardButton', 'reloadButton', 'navigationAddress']) {
       assert.match(html, new RegExp(`id="${id}"`));
