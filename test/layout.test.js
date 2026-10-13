@@ -23,6 +23,7 @@ let windowInstance;
 const sentMessages = [];
 const ipc = new Map();
 const linkDialogs = [];
+const nativeMenus = [];
 const screen = new EventEmitter();
 const display = { id: 1, workArea: { x: 0, y: 0, width: 1920, height: 1040 } };
 screen.getPrimaryDisplay = () => display;
@@ -115,7 +116,7 @@ app.requestSingleInstanceLock = () => true;
 app.quit = () => {};
 const electron = {
   app, BrowserWindow: MockWindow,
-  Menu: { buildFromTemplate: (items) => items }, Tray: MockTray, WebContentsView: MockView,
+  Menu: { buildFromTemplate: (items) => ({ popup: () => nativeMenus.push(items) }) }, Tray: MockTray, WebContentsView: MockView,
   ipcMain: { handle: (key, fn) => ipc.set(key, fn) }, nativeImage: {
     createFromDataURL: () => fakeImage,
     createFromBuffer: () => fakeImage
@@ -150,10 +151,11 @@ async function invoke(channel, ...args) {
   try {
     await waitForReady();
     const readState = () => sandbox.__sidebarTest.getPublicState();
-    assert.equal(readState().window.panelWidth, 420, 'corrigir largura antiga 1736');
-    assert.deepEqual(windowInstance.bounds, { x: 1416, y: 16, width: 488, height: 720 });
+    assert.equal(readState().window.panelWidth, 1572, 'largura grande limitada à área disponível');
+    assert.equal(readState().layout.maxPanelWidth, 1572, 'limite maior que 780px');
+    assert.deepEqual(windowInstance.bounds, { x: 264, y: 16, width: 1640, height: 720 });
     assert.equal(windowInstance.children.length, 1);
-    assert.equal(windowInstance.children[0].bounds.width, 420);
+    assert.equal(windowInstance.children[0].bounds.width, 1572);
     assert.equal(windowInstance.children[0].bounds.y, 46, 'reservar espaço clicável para a navegação');
     assert.equal(windowInstance.children[0].bounds.height, 674);
 
@@ -167,6 +169,21 @@ async function invoke(channel, ...args) {
     assert.equal(newWindow({ url: 'javascript:alert(1)' }).action, 'deny');
     await new Promise((resolve) => setTimeout(resolve, 15));
     assert.equal(linkDialogs.length, 1, 'protocolo inseguro não abre seletor');
+    // A webview deve mostrar menu nativo e impedir links inseguros.
+    const embedded = windowInstance.children[0].webContents;
+    embedded.emit('context-menu', {}, { linkURL: 'https://example.com/test', selectionText: '' });
+    assert.ok(nativeMenus.at(-1).some((x) => x.label === 'Copiar endereço do link'));
+    embedded.emit('context-menu', {}, { linkURL: 'javascript:alert(1)', selectionText: 'teste' });
+    assert.equal(nativeMenus.at(-1).some((x) => x.label === 'Abrir link aqui'), false);
+    // Google One Tap: oferecer navegador externo em vez de tela branca.
+    let prevented = false;
+    embedded.emit('will-navigate', { preventDefault() { prevented = true; } }, 'https://accounts.google.com/gsi/select');
+    assert.equal(prevented, true);
+    await new Promise((resolve) => setTimeout(resolve, 15));
+    assert.ok(linkDialogs.some((x) => x.message?.includes('Google')));
+    windowInstance.webContents.emit('context-menu', {}, {});
+    assert.ok(nativeMenus.at(-1).some((x) => x.label === 'Configurações'));
+
     // Navegação da própria view (não compartilha histórico entre sites).
     const chatWc = windowInstance.children[0].webContents;
     assert.equal(readState().navigation.canGoBack, false);
@@ -184,17 +201,17 @@ async function invoke(channel, ...args) {
     await assert.rejects(invoke('sidebar:navigate', 'javascript:alert(1)'), /inválida/i);
     assert.ok(sentMessages.some(({ channel }) => channel === 'sidebar:navigation-updated'));
 
-    await invoke('sidebar:set-panel-width', 600, true);
-    assert.equal(windowInstance.bounds.width, 668);
+    await invoke('sidebar:set-panel-width', 1200, true);
+    assert.equal(windowInstance.bounds.width, 1268);
     assert.equal(windowInstance.bounds.x + windowInstance.bounds.width, 1904, 'preservar borda direita ao redimensionar');
-    assert.equal(windowInstance.children[0].bounds.width, 600);
+    assert.equal(windowInstance.children[0].bounds.width, 1200);
 
     await invoke('sidebar:toggle-expanded');
     assert.equal(windowInstance.bounds.width, 60);
     assert.equal(windowInstance.bounds.x + windowInstance.bounds.width, 1904);
     assert.equal(windowInstance.children.length, 0, 'view não deve cobrir barra recolhida');
     await invoke('sidebar:toggle-expanded');
-    assert.equal(windowInstance.bounds.width, 668);
+    assert.equal(windowInstance.bounds.width, 1268);
     assert.equal(windowInstance.children.length, 1);
 
     await invoke('sidebar:set-settings-open', true);
