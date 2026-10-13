@@ -1,10 +1,11 @@
-const { app, BrowserWindow, Menu, Tray, WebContentsView, ipcMain, nativeImage, screen, session } = require('electron');
+const { app, BrowserWindow, Menu, Tray, WebContentsView, ipcMain, nativeImage, screen, session, dialog, shell, clipboard } = require('electron');
 const fs = require('node:fs/promises');
 const { existsSync, mkdirSync } = require('node:fs');
 const path = require('node:path');
 const { randomUUID } = require('node:crypto');
 const { pathToFileURL } = require('node:url');
 const { createWindowsAppBar } = require('./windows-appbar');
+const { safeWebLink, detectedBrowsers, launchBrowser, displayLink } = require('./browser-links');
 
 const SIDEBAR_WIDTH = 60;
 const NAVIGATION_BAR_HEIGHT = 46;
@@ -97,6 +98,7 @@ function defaultConfig() {
       panelWidth: DEFAULT_PANEL_WIDTH,
       docked: false, // false = janela independente; true = barra fixa na borda do monitor
       reserveSpace: true, // quando fixada, reserva espaço real no desktop do Windows
+      startWithWindows: false, // disponível no .exe instalado
       floatingPosition: null
     },
     activeSiteId: DEFAULT_SITES[0].id,
@@ -105,6 +107,10 @@ function defaultConfig() {
   };
 }
 
+function applyLoginPreference() {
+  if (process.platform !== 'win32' || !app.isPackaged) return;
+  app.setLoginItemSettings({ openAtLogin: Boolean(config.window.startWithWindows), path: process.execPath });
+}
 function getConfigPath() {
   return path.join(app.getPath('userData'), 'config.json');
 }
@@ -224,6 +230,7 @@ function sanitizeConfig(candidate = {}) {
       panelWidth: sanitizeSavedPanelWidth(candidate.window?.panelWidth),
       docked: typeof candidate.window?.docked === 'boolean' ? candidate.window.docked : base.window.docked,
       reserveSpace: typeof candidate.window?.reserveSpace === 'boolean' ? candidate.window.reserveSpace : base.window.reserveSpace,
+      startWithWindows: typeof candidate.window?.startWithWindows === 'boolean' ? candidate.window.startWithWindows : base.window.startWithWindows,
       floatingPosition: sanitizeFloatingPosition(candidate.window?.floatingPosition)
     },
     activeSiteId,
@@ -318,6 +325,7 @@ function getPublicState() {
     },
     activeSiteId: config.activeSiteId,
     navigation: getNavigationState(),
+    autostartSupported: process.platform === 'win32' && Boolean(app.isPackaged),
     appBar: {
       supported: process.platform === 'win32',
       registered: Boolean(nativeAppBar?.state.registered),
@@ -650,9 +658,51 @@ async function updateSiteFavicon(siteId, faviconCandidates = [], pageUrl = '') {
   }
 }
 
+// Browser-picker dialogs are serialized to avoid overlapping popups.
+let linkDialogQueue = Promise.resolve();
+function queueLinkChoice(siteId, rawUrl) {
+  const url = safeWebLink(rawUrl);
+  if (!url) return;
+  const task = () => chooseLinkDestination(siteId, url);
+  linkDialogQueue = linkDialogQueue.then(task, task).catch((error) => logError('external-link', error));
+}
+async function chooseLinkDestination(siteId, url) {
+  if (!mainWindow || mainWindow.isDestroyed()) return;
+  const browsers = detectedBrowsers();
+  const buttons = [
+    'Abrir aqui na Sidebar', 'Navegador padrão',
+    ...browsers.map((browser) => browser.name), 'Copiar link', 'Cancelar'
+  ];
+  const cancelId = buttons.length - 1;
+  const result = await dialog.showMessageBox(mainWindow, {
+    type: 'question',
+    title: 'Abrir link — Edge Sidebar Lite',
+    message: 'Onde você quer abrir este link?',
+    detail: displayLink(url),
+    buttons, defaultId: cancelId, cancelId, noLink: true
+  });
+  if (result.response === cancelId || result.response < 0) return;
+  if (result.response === 0) {
+    if (!url.startsWith('https:')) return;
+    const entry = viewEntries.get(siteId);
+    if (entry && !entry.view.webContents.isDestroyed()) {
+      await entry.view.webContents.loadURL(url);
+    }
+  } else if (result.response === 1) {
+    await shell.openExternal(url);
+  } else if (result.response >= 2 && result.response < browsers.length + 2) {
+    await launchBrowser(browsers[result.response - 2], url);
+  } else if (result.response === browsers.length + 2) {
+    await Promise.resolve(clipboard.writeText(url));
+  }
+}
+
 function configureView(siteId, view) {
   const wc = view.webContents;
-  wc.setWindowOpenHandler(() => ({ action: 'deny' }));
+  wc.setWindowOpenHandler(({ url }) => {
+    if (safeWebLink(url)) setImmediate(() => queueLinkChoice(siteId, url));
+    return { action: 'deny' };
+  });
 
   wc.on('will-navigate', (event, targetUrl) => {
     if (!allowNavigation(targetUrl)) {
@@ -885,6 +935,22 @@ function createTrayMenu() {
     },
     { type: 'separator' },
     {
+      label: 'Iniciar com o Windows (instalado)', type: 'checkbox',
+      enabled: process.platform === 'win32' && Boolean(app.isPackaged),
+      checked: Boolean(config.window.startWithWindows),
+      click: () => fireAndForget('tray:autostart', (async () => {
+        const previous = config.window.startWithWindows;
+        config.window.startWithWindows = !previous;
+        try { applyLoginPreference(); await saveConfig(); } catch (error) {
+          config.window.startWithWindows = previous;
+          refreshTrayMenu();
+          throw error;
+        }
+        refreshTrayMenu(); sendState();
+      })())
+    },
+    { type: 'separator' },
+    {
       label: 'Sair',
       click: () => {
         isQuitting = true;
@@ -1076,6 +1142,7 @@ handleIpc('sidebar:set-settings-open', async (_event, isOpen) => {
 });
 
 handleIpc('sidebar:save-settings', async (_event, nextSettings = {}) => {
+  const previousAutostart = config.window.startWithWindows;
   const previousSites = new Map(config.sites.map((site) => [site.id, site]));
   const merged = sanitizeConfig({
     window: {
@@ -1085,6 +1152,9 @@ handleIpc('sidebar:save-settings', async (_event, nextSettings = {}) => {
       panelWidth: nextSettings.window?.panelWidth,
       docked: typeof nextSettings.window?.docked === 'boolean' ? nextSettings.window.docked : config.window.docked,
       reserveSpace: typeof nextSettings.window?.reserveSpace === 'boolean' ? nextSettings.window.reserveSpace : config.window.reserveSpace,
+      startWithWindows: process.platform === 'win32' && app.isPackaged
+        ? Boolean(nextSettings.window?.startWithWindows)
+        : config.window.startWithWindows,
       floatingPosition: config.window.floatingPosition
     },
     activeSiteId: nextSettings.activeSiteId ?? config.activeSiteId,
@@ -1116,6 +1186,13 @@ handleIpc('sidebar:save-settings', async (_event, nextSettings = {}) => {
   }
 
   config = merged;
+  if (previousAutostart !== config.window.startWithWindows) {
+    try { applyLoginPreference(); } catch (error) {
+      config.window.startWithWindows = previousAutostart;
+      logError('windows-autostart', error);
+      throw new Error('Não foi possível configurar a inicialização automática.');
+    }
+  }
   if (!config.activeSiteId && config.sites.length > 0) {
     config.activeSiteId = config.sites[0].id;
   }
@@ -1147,6 +1224,7 @@ if (!singleInstanceLock) {
   });
   app.whenReady().then(async () => {
   await loadConfig();
+  try { applyLoginPreference(); } catch (error) { logError('windows-autostart', error); }
   await createMainWindow();
   createTray();
 
