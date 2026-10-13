@@ -1,6 +1,6 @@
 {
   "name": "edge-sidebar-lite",
-  "version": "0.3.0",
+  "version": "0.3.1",
   "description": "Windows sidebar com escolha de navegador para links externos",
   "main": "src/main.js",
   "type": "commonjs",
