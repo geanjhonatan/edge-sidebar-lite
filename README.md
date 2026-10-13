@@ -43,7 +43,7 @@ O funcionamento no Windows 11 ainda precisa de validação específica. A reserv
 No **PowerShell**, execute:
 
 ```powershell
-git clone https://github.com/Ehmmentt/edge-sidebar-lite.git
+git clone https://github.com/geanjhonatan/edge-sidebar-lite.git
 cd edge-sidebar-lite
 npm install
 npm start
@@ -119,7 +119,7 @@ Este projeto é desenvolvido no contexto de **Security Research & App Hardening*
 
 ## 🤝 Contribuições
 
-Sugestões, relatos de bugs e contribuições são bem-vindos! Abra uma [Issue](https://github.com/Ehmmentt/edge-sidebar-lite/issues) com o problema encontrado, os passos para reproduzi-lo e a versão do Windows.
+Sugestões, relatos de bugs e contribuições são bem-vindos! Abra uma [Issue](https://github.com/geanjhonatan/edge-sidebar-lite/issues) com o problema encontrado, os passos para reproduzi-lo e a versão do Windows.
 
 ## 📄 Licença
 
@@ -127,4 +127,4 @@ O repositório **ainda não possui uma licença de código aberto definida**. Um
 
 ---
 
-**Desenvolvido por [Ehmmentt](https://github.com/Ehmmentt).** ⭐ Se o projeto for útil, considere deixar uma estrela no repositório.
+**Desenvolvido por [geanjhonatan](https://github.com/geanjhonatan).** ⭐ Se o projeto for útil, considere deixar uma estrela no repositório.
