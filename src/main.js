@@ -1,10 +1,11 @@
-const { app, BrowserWindow, Menu, Tray, WebContentsView, ipcMain, nativeImage, screen, session } = require('electron');
+const { app, BrowserWindow, Menu, Tray, WebContentsView, ipcMain, nativeImage, screen, session, dialog, shell, clipboard } = require('electron');
 const fs = require('node:fs/promises');
 const { existsSync, mkdirSync } = require('node:fs');
 const path = require('node:path');
 const { randomUUID } = require('node:crypto');
 const { pathToFileURL } = require('node:url');
 const { createWindowsAppBar } = require('./windows-appbar');
+const { safeWebLink, detectedBrowsers, launchBrowser, displayLink } = require('./browser-links');
 
 const SIDEBAR_WIDTH = 60;
 const NAVIGATION_BAR_HEIGHT = 46;
@@ -12,7 +13,7 @@ const RESIZE_HANDLE_WIDTH = 8;
 const DEFAULT_PANEL_WIDTH = 420;
 const MIN_PANEL_WIDTH = 320;
 const MAX_LIVE_VIEWS = 3;
-const MAX_PANEL_WIDTH = 780;
+const MAX_PANEL_WIDTH = 2800;
 const FLOATING_HEIGHT = 720;
 const WINDOW_MARGIN = 16;
 const FAVICON_MAX_BYTES = 512 * 1024;
@@ -97,6 +98,7 @@ function defaultConfig() {
       panelWidth: DEFAULT_PANEL_WIDTH,
       docked: false, // false = janela independente; true = barra fixa na borda do monitor
       reserveSpace: true, // quando fixada, reserva espaço real no desktop do Windows
+      startWithWindows: false, // disponível no .exe instalado
       floatingPosition: null
     },
     activeSiteId: DEFAULT_SITES[0].id,
@@ -105,6 +107,10 @@ function defaultConfig() {
   };
 }
 
+function applyLoginPreference() {
+  if (process.platform !== 'win32' || !app.isPackaged) return;
+  app.setLoginItemSettings({ openAtLogin: Boolean(config.window.startWithWindows), path: process.execPath });
+}
 function getConfigPath() {
   return path.join(app.getPath('userData'), 'config.json');
 }
@@ -224,6 +230,7 @@ function sanitizeConfig(candidate = {}) {
       panelWidth: sanitizeSavedPanelWidth(candidate.window?.panelWidth),
       docked: typeof candidate.window?.docked === 'boolean' ? candidate.window.docked : base.window.docked,
       reserveSpace: typeof candidate.window?.reserveSpace === 'boolean' ? candidate.window.reserveSpace : base.window.reserveSpace,
+      startWithWindows: typeof candidate.window?.startWithWindows === 'boolean' ? candidate.window.startWithWindows : base.window.startWithWindows,
       floatingPosition: sanitizeFloatingPosition(candidate.window?.floatingPosition)
     },
     activeSiteId,
@@ -261,11 +268,11 @@ function getTargetDisplay() {
 }
 
 function getPanelWidthLimits(display = getTargetDisplay()) {
-  // Impede que valores antigos (como 1736 px) criem uma janela gigante.
+  // A largura útil já exclui nossa própria AppBar: evitar estreitamento sucessivo.
   const usableWidth = config?.window?.docked && config?.window?.reserveSpace && process.platform === 'win32'
     ? display.bounds.width : display.workArea.width;
-  const available = Math.max(220, usableWidth - SIDEBAR_WIDTH - RESIZE_HANDLE_WIDTH - WINDOW_MARGIN * 2);
-  const max = Math.max(220, Math.min(MAX_PANEL_WIDTH, available, Math.floor(usableWidth * 0.6)));
+  const available = Math.max(220, usableWidth - SIDEBAR_WIDTH - RESIZE_HANDLE_WIDTH - 280);
+  const max = Math.max(220, Math.min(MAX_PANEL_WIDTH, available, Math.floor(usableWidth * 0.9)));
   return { min: Math.min(MIN_PANEL_WIDTH, max), max };
 }
 
@@ -318,6 +325,7 @@ function getPublicState() {
     },
     activeSiteId: config.activeSiteId,
     navigation: getNavigationState(),
+    autostartSupported: process.platform === 'win32' && Boolean(app.isPackaged),
     appBar: {
       supported: process.platform === 'win32',
       registered: Boolean(nativeAppBar?.state.registered),
@@ -650,18 +658,149 @@ async function updateSiteFavicon(siteId, faviconCandidates = [], pageUrl = '') {
   }
 }
 
+// Browser-picker dialogs are serialized to avoid overlapping popups.
+let linkDialogQueue = Promise.resolve();
+function queueLinkChoice(siteId, rawUrl) {
+  const url = safeWebLink(rawUrl);
+  if (!url) return;
+  const task = () => chooseLinkDestination(siteId, url);
+  linkDialogQueue = linkDialogQueue.then(task, task).catch((error) => logError('external-link', error));
+}
+async function chooseLinkDestination(siteId, url, externalOnly = false) {
+  if (!mainWindow || mainWindow.isDestroyed()) return;
+  const browsers = detectedBrowsers();
+  const buttons = [
+    ...(!externalOnly ? ['Abrir aqui na Sidebar'] : []),
+    'Navegador padrão',
+    ...browsers.map((browser) => browser.name),
+    'Copiar link', 'Cancelar'
+  ];
+  const cancelId = buttons.length - 1;
+  const { response } = await dialog.showMessageBox(mainWindow, {
+    type: 'question', title: 'Abrir link — Edge Sidebar Lite',
+    message: 'Onde você quer abrir este link?', detail: displayLink(url),
+    buttons, defaultId: cancelId, cancelId, noLink: true
+  });
+  if (response === cancelId || response < 0) return;
+  const choice = buttons[response];
+  if (choice === 'Abrir aqui na Sidebar' && !externalOnly) {
+    if (!url.startsWith('https:') || isGoogleEmbeddedLogin(url)) return;
+    const entry = viewEntries.get(siteId);
+    if (entry && !entry.view.webContents.isDestroyed()) {
+      await entry.view.webContents.loadURL(url);
+    }
+  } else if (choice === 'Navegador padrão') {
+    await shell.openExternal(url);
+  } else if (browsers.some((browser) => browser.name === choice)) {
+    await launchBrowser(browsers.find((browser) => browser.name === choice), url);
+  } else if (choice === 'Copiar link') {
+    clipboard.writeText(url);
+  }
+}
+
+const googlePromptAt = new Map();
+function isGoogleEmbeddedLogin(rawUrl) {
+  const url = safeWebLink(rawUrl);
+  if (!url) return false;
+  const parsed = new URL(url);
+  return parsed.hostname === 'accounts.google.com' &&
+    (/^\/gsi\//.test(parsed.pathname) || /^\/o\/oauth2\//.test(parsed.pathname) || /^\/signin\/oauth/.test(parsed.pathname));
+}
+function queueExternalLoginHelp(siteId) {
+  const now = Date.now();
+  if (now - (googlePromptAt.get(siteId) || 0) < 1800) return;
+  googlePromptAt.set(siteId, now);
+  const task = () => showExternalLoginHelp(siteId);
+  linkDialogQueue = linkDialogQueue.then(task, task).catch((error) => logError('google-login-help', error));
+}
+async function showExternalLoginHelp(siteId) {
+  if (!mainWindow || mainWindow.isDestroyed()) return;
+  const homeUrl = safeWebLink(getSiteConfig(siteId)?.url);
+  if (!homeUrl) return;
+  const buttons = ['Abrir site no navegador padrão', 'Escolher navegador', 'Cancelar'];
+  const { response } = await dialog.showMessageBox(mainWindow, {
+    type: 'info', title: 'Entrar com Google',
+    message: 'O login do Google pode não funcionar na Sidebar.',
+    detail: 'O Google restringe login em navegadores incorporados. Abra o site original em seu navegador normal e faça login lá. A sessão não será transferida automaticamente para a Sidebar.',
+    buttons, defaultId: 0, cancelId: 2, noLink: true
+  });
+  if (response === 0) await shell.openExternal(homeUrl);
+  if (response === 1) await chooseLinkDestination(siteId, homeUrl, true);
+}
+
+// Menu nativo: páginas de sites e controles HTML utilizam WebContents distintos.
+function openContextMenu(siteId, wc, params = {}, localUi = false) {
+  if (!mainWindow || mainWindow.isDestroyed()) return;
+  const template = [];
+  const link = safeWebLink(params.linkURL);
+  const mediaLink = safeWebLink(params.srcURL);
+  const flags = params.editFlags || {};
+  if (link) {
+    if (!localUi) template.push({
+      label: 'Abrir link aqui', enabled: link.startsWith('https:') && !isGoogleEmbeddedLogin(link),
+      click: () => fireAndForget('context:open-here', wc.loadURL(link))
+    });
+    template.push({ label: 'Abrir link em outro navegador', click: () => queueLinkChoice(siteId, link) });
+    template.push({ label: 'Copiar endereço do link', click: () => clipboard.writeText(link) });
+    template.push({ type: 'separator' });
+  }
+  if (mediaLink && params.mediaType === 'image') {
+    template.push({ label: 'Copiar endereço da imagem', click: () => clipboard.writeText(mediaLink) });
+    template.push({ type: 'separator' });
+  }
+  if (params.isEditable) {
+    template.push({ role: 'undo', label: 'Desfazer', enabled: Boolean(flags.canUndo) });
+    template.push({ role: 'redo', label: 'Refazer', enabled: Boolean(flags.canRedo) });
+    template.push({ type: 'separator' });
+    template.push({ role: 'cut', label: 'Recortar', enabled: Boolean(flags.canCut) });
+    template.push({ role: 'copy', label: 'Copiar', enabled: Boolean(flags.canCopy) });
+    template.push({ role: 'paste', label: 'Colar', enabled: Boolean(flags.canPaste) });
+    template.push({ role: 'selectAll', label: 'Selecionar tudo' });
+    template.push({ type: 'separator' });
+  } else if (params.selectionText) {
+    template.push({ role: 'copy', label: 'Copiar seleção' });
+    template.push({ type: 'separator' });
+  }
+  if (!localUi && wc && !wc.isDestroyed()) {
+    const history = navigationAPI(wc);
+    template.push({ label: 'Voltar', enabled: Boolean(history?.canGoBack?.()), click: () => history.goBack() });
+    template.push({ label: 'Avançar', enabled: Boolean(history?.canGoForward?.()), click: () => history.goForward() });
+    template.push({ label: 'Recarregar', click: () => wc.reload() });
+    const currentUrl = safeWebLink(wc.getURL?.());
+    if (currentUrl) template.push({ label: 'Abrir página no navegador', click: () => queueLinkChoice(siteId, currentUrl) });
+  } else {
+    template.push({
+      label: 'Configurações',
+      click: () => { settingsOpen = true; fireAndForget('context:settings', showActiveView()); sendState(); }
+    });
+  }
+  if (template.at(-1)?.type === 'separator') template.pop();
+  if (template.length) Menu.buildFromTemplate(template).popup({ window: mainWindow });
+}
+
 function configureView(siteId, view) {
   const wc = view.webContents;
-  wc.setWindowOpenHandler(() => ({ action: 'deny' }));
+  wc.setWindowOpenHandler(({ url }) => {
+    if (isGoogleEmbeddedLogin(url)) setImmediate(() => queueExternalLoginHelp(siteId));
+    else if (safeWebLink(url)) setImmediate(() => queueLinkChoice(siteId, url));
+    return { action: 'deny' };
+  });
+  wc.on('context-menu', (_event, params) => openContextMenu(siteId, wc, params));
 
   wc.on('will-navigate', (event, targetUrl) => {
-    if (!allowNavigation(targetUrl)) {
+    if (isGoogleEmbeddedLogin(targetUrl)) {
+      event.preventDefault();
+      queueExternalLoginHelp(siteId);
+    } else if (!allowNavigation(targetUrl)) {
       event.preventDefault();
     }
   });
 
   wc.on('will-redirect', (event, targetUrl) => {
-    if (!allowNavigation(targetUrl)) {
+    if (isGoogleEmbeddedLogin(targetUrl)) {
+      event.preventDefault();
+      queueExternalLoginHelp(siteId);
+    } else if (!allowNavigation(targetUrl)) {
       event.preventDefault();
     }
   });
@@ -679,6 +818,7 @@ function configureView(siteId, view) {
   });
 
   wc.on('did-finish-load', () => {
+    if (isGoogleEmbeddedLogin(wc.getURL())) queueExternalLoginHelp(siteId);
     markViewUsed(siteId);
     if (currentViewId === siteId) sendNavigationState();
     fireAndForget(`favicon-fallback:${siteId}`, updateSiteFavicon(siteId, [], wc.getURL()));
@@ -885,6 +1025,22 @@ function createTrayMenu() {
     },
     { type: 'separator' },
     {
+      label: 'Iniciar com o Windows (instalado)', type: 'checkbox',
+      enabled: process.platform === 'win32' && Boolean(app.isPackaged),
+      checked: Boolean(config.window.startWithWindows),
+      click: () => fireAndForget('tray:autostart', (async () => {
+        const previous = config.window.startWithWindows;
+        config.window.startWithWindows = !previous;
+        try { applyLoginPreference(); await saveConfig(); } catch (error) {
+          config.window.startWithWindows = previous;
+          refreshTrayMenu();
+          throw error;
+        }
+        refreshTrayMenu(); sendState();
+      })())
+    },
+    { type: 'separator' },
+    {
       label: 'Sair',
       click: () => {
         isQuitting = true;
@@ -934,6 +1090,8 @@ async function createMainWindow() {
   });
 
   mainWindow.removeMenu();
+  mainWindow.webContents.on('context-menu', (_event, params) =>
+    openContextMenu(config.activeSiteId, mainWindow.webContents, params, true));
   nativeAppBar = createWindowsAppBar(mainWindow, screen, () => {
     // Mensagens do shell podem chegar enquanto setBounds está em execução;
     // reagendar fora do WndProc e evitar atualizações em cascata.
@@ -1076,6 +1234,7 @@ handleIpc('sidebar:set-settings-open', async (_event, isOpen) => {
 });
 
 handleIpc('sidebar:save-settings', async (_event, nextSettings = {}) => {
+  const previousAutostart = config.window.startWithWindows;
   const previousSites = new Map(config.sites.map((site) => [site.id, site]));
   const merged = sanitizeConfig({
     window: {
@@ -1085,6 +1244,9 @@ handleIpc('sidebar:save-settings', async (_event, nextSettings = {}) => {
       panelWidth: nextSettings.window?.panelWidth,
       docked: typeof nextSettings.window?.docked === 'boolean' ? nextSettings.window.docked : config.window.docked,
       reserveSpace: typeof nextSettings.window?.reserveSpace === 'boolean' ? nextSettings.window.reserveSpace : config.window.reserveSpace,
+      startWithWindows: process.platform === 'win32' && app.isPackaged
+        ? Boolean(nextSettings.window?.startWithWindows)
+        : config.window.startWithWindows,
       floatingPosition: config.window.floatingPosition
     },
     activeSiteId: nextSettings.activeSiteId ?? config.activeSiteId,
@@ -1116,6 +1278,13 @@ handleIpc('sidebar:save-settings', async (_event, nextSettings = {}) => {
   }
 
   config = merged;
+  if (previousAutostart !== config.window.startWithWindows) {
+    try { applyLoginPreference(); } catch (error) {
+      config.window.startWithWindows = previousAutostart;
+      logError('windows-autostart', error);
+      throw new Error('Não foi possível configurar a inicialização automática.');
+    }
+  }
   if (!config.activeSiteId && config.sites.length > 0) {
     config.activeSiteId = config.sites[0].id;
   }
@@ -1147,6 +1316,7 @@ if (!singleInstanceLock) {
   });
   app.whenReady().then(async () => {
   await loadConfig();
+  try { applyLoginPreference(); } catch (error) { logError('windows-autostart', error); }
   await createMainWindow();
   createTray();
 
