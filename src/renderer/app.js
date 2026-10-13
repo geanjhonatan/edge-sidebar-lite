@@ -15,6 +15,8 @@ const elements = {
   dockButton: document.getElementById('dockButton'),
   dockedInput: document.getElementById('dockedInput'),
   reserveSpaceInput: document.getElementById('reserveSpaceInput'),
+  startWithWindowsInput: document.getElementById('startWithWindowsInput'),
+  startWithWindowsNote: document.getElementById('startWithWindowsNote'),
   appBarFeedback: document.getElementById('appBarFeedback'),
   switchSideButton: document.getElementById('switchSideButton'),
   settingsButton: document.getElementById('settingsButton'),
@@ -215,6 +217,13 @@ function syncSettingsChrome() {
   if (!elements.reserveSpaceInput.dataset.dirty) {
     elements.reserveSpaceInput.checked = state.window.reserveSpace !== false;
   }
+  if (!elements.startWithWindowsInput.dataset.dirty) {
+    elements.startWithWindowsInput.checked = Boolean(state.window.startWithWindows);
+  }
+  elements.startWithWindowsInput.disabled = !state.autostartSupported;
+  elements.startWithWindowsNote.textContent = state.autostartSupported
+    ? 'Ativa a inicialização automática no login (pode ser desativada aqui).'
+    : 'Disponível somente no .exe instalado no Windows.';
   elements.reserveSpaceInput.disabled = !elements.dockedInput.checked;
   const shouldReserve = elements.dockedInput.checked && elements.reserveSpaceInput.checked;
   elements.appBarFeedback.textContent = state.appBar?.error && shouldReserve
@@ -381,6 +390,7 @@ async function openSettings({ addSite = false } = {}) {
   delete elements.alwaysOnTopInput.dataset.dirty;
   delete elements.dockedInput.dataset.dirty;
   delete elements.reserveSpaceInput.dataset.dirty;
+  delete elements.startWithWindowsInput.dataset.dirty;
   delete elements.sideInput.dataset.dirty;
   delete elements.panelWidthNumber.dataset.dirty;
   syncSettingsChrome();
@@ -434,6 +444,7 @@ async function saveSettings(event) {
         alwaysOnTop: elements.alwaysOnTopInput.checked,
         docked: elements.dockedInput.checked,
         reserveSpace: elements.reserveSpaceInput.checked,
+        startWithWindows: elements.startWithWindowsInput.checked,
         side: elements.sideInput.value,
         panelWidth: width
       },
@@ -596,6 +607,7 @@ async function initialize() {
     elements.reserveSpaceInput.disabled = !event.target.checked;
   });
   elements.reserveSpaceInput.addEventListener('change', (event) => { event.target.dataset.dirty = 'true'; });
+  elements.startWithWindowsInput.addEventListener('change', (event) => { event.target.dataset.dirty = 'true'; });
   elements.sideInput.addEventListener('change', (event) => { event.target.dataset.dirty = 'true'; });
   elements.panelWidthRange.addEventListener('input', () => {
     elements.panelWidthNumber.dataset.dirty = 'true';
