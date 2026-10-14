@@ -35,6 +35,17 @@ Acesse seus sites favoritos sem abrir um navegador completo. Fixe a barra à esq
 
 **Importante:** sites incorporados podem restringir login, autenticação Google, permissões ou reprodução. Quando um login externo não é compatível, utilize o navegador habitual — a sessão externa não é transferida à Sidebar.
 
+## 📥 Baixar instalador (.exe) — v0.4.0-beta.1
+
+**[⬇️ BAIXAR EDGE SIDEBAR LITE PARA WINDOWS (INSTALADOR BETA)](https://github.com/geanjhonatan/edge-sidebar-lite/actions/runs/38495754815)**
+
+O instalador foi **gerado com sucesso no Windows pelo GitHub Actions**, mas **não possui assinatura digital**. É uma compilação **experimental**, destinada a testes controlados, não uma Release estável.
+
+**Como baixar:** abra o link acima, entre no GitHub se necessário, procure a seção **Artifacts**, clique em `edge-sidebar-lite-windows-installer`, extraia o arquivo ZIP e execute o `.exe` incluído. Não é necessário instalar Node.js para usar a versão empacotada.
+
+> [!WARNING]
+> O arquivo executável ainda não é assinado e pode acionar avisos do Windows SmartScreen. Confira sempre a origem e não ignore alertas sem verificar a procedência. **Artefatos do GitHub Actions expiram**; quando isso acontecer, consulte os [builds mais recentes](https://github.com/geanjhonatan/edge-sidebar-lite/actions) ou gere o instalador localmente. O sistema de atualização automática continua desativado até concluirmos a assinatura.
+
 ## 💻 Instalação para desenvolvedores
 
 Requisitos: **Windows 10 x64**, Node.js e npm. Windows 11 e configurações com vários monitores ainda precisam de validação ampla.
