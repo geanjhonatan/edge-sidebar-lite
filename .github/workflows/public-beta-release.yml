@@ -1,0 +1,96 @@
+name: Publish public beta installer (unsigned)
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/public-beta-release.yml'
+
+permissions:
+  contents: write
+
+concurrency:
+  group: beta-release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  release-beta:
+    name: Build and publish unsigned beta
+    runs-on: windows-latest
+    timeout-minutes: 40
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Prepare Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Verify lockfile
+        run: npm run lock:verify
+
+      - name: Reproducible installation
+        run: npm ci --no-audit --no-fund
+
+      - name: Run source checks and tests
+        run: |
+          npm run check
+          npm test
+
+      - name: Compile Windows NSIS installer without signing
+        run: npm run dist:win
+        env:
+          CSC_IDENTITY_AUTO_DISCOVERY: 'false'
+
+      - name: Generate installer checksum and release notes
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $version = (node -p "require('./package.json').version").Trim()
+          if ($version -notmatch '-(beta|alpha|rc)[.0-9-]*') {
+            throw 'Public unsigned downloads must remain prereleases.'
+          }
+          $tag = "v$version"
+          "RELEASE_TAG=$tag" >> $env:GITHUB_ENV
+          $installer = @(Get-ChildItem dist -Filter '*.exe' -File)
+          if ($installer.Count -ne 1) {
+            throw "Expected exactly one EXE, found $($installer.Count)."
+          }
+          $hash = (Get-FileHash -Path $installer[0].FullName -Algorithm SHA256).Hash.ToLowerInvariant()
+          "$hash  $($installer[0].Name)" | Set-Content -Path dist/SHA256SUMS.txt -Encoding utf8
+          @'
+          ## Edge Sidebar Lite beta — download publico para Windows x64
+
+          **Esta versao e uma beta experimental NAO ASSINADA.**
+          Foi gerada pelos testes automatizados do GitHub Actions. Nenhum certificado
+          Authenticode foi aplicado: o SmartScreen pode apresentar avisos. Nao instale
+          se voce nao confia no repositorio e na origem do arquivo.
+
+          **Como instalar:** baixe o arquivo .exe na secao Assets desta Release;
+          execute o instalador no Windows. Nao precisa de GitHub, Node.js ou npm.
+
+          Funcionalidades: painel lateral, sites ilimitados, navegador externo,
+          abas de audio protegidas, menus de contexto, configuracoes persistentes,
+          reserva de espaco (AppBar), central de consulta de atualizacoes.
+
+          **Atualizacoes automaticas de executaveis permanecem desabilitadas**
+          ate assinatura e verificacoes completas. Cookies e sessoes nao sao incluidos.
+          Veja SHA256SUMS.txt para conferir integridade do download.
+          '@ | Set-Content -Path dist/RELEASE-NOTES.md -Encoding utf8
+
+      - name: Create public prerelease with direct installer asset
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $existing = & gh release view $env:RELEASE_TAG --json tagName 2>$null
+          if ($LASTEXITCODE -eq 0) {
+            throw "Release $env:RELEASE_TAG already exists. Bump version; never overwrite existing published binaries."
+          }
+          $installer = @(Get-ChildItem dist -Filter '*.exe' -File)
+          $assets = @($installer[0].FullName, (Resolve-Path 'dist/SHA256SUMS.txt').Path)
+          & gh release create $env:RELEASE_TAG @assets --prerelease --title "Edge Sidebar Lite $env:RELEASE_TAG (beta, sem assinatura)" --notes-file 'dist/RELEASE-NOTES.md' --target $env:GITHUB_SHA
+          if ($LASTEXITCODE -ne 0) { throw 'Could not create GitHub prerelease.' }
