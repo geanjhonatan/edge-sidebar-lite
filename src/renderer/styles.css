@@ -308,6 +308,24 @@ select {
   min-height: 40px;
 }
 
+.site-audio-badge {
+  position: absolute;
+  top: -3px;
+  right: -5px;
+  display: flex;
+  width: 19px;
+  height: 19px;
+  justify-content: center;
+  align-items: center;
+  font-size: 11px;
+  line-height: 1;
+  background: #143e2d;
+  border: 1px solid #39c17c;
+  border-radius: 50%;
+  pointer-events: none;
+  z-index: 2;
+}
+
 .site-favicon {
   width: 18px;
   height: 18px;
@@ -596,3 +614,16 @@ select:focus {
 .settings-card { width: 100%; max-width: 500px; }
 
 .setting-note { font-size: 12px; opacity: .7; margin: -4px 0 8px; line-height: 1.4; }
+
+/* Semana 1: UI de atualização integrada à página de configurações. */
+.updates-card { margin: 16px 0; padding: 15px; border-radius: 12px; border: 1px solid var(--border); background: rgba(55,75,105,.13); }
+.updates-heading { display:flex; justify-content:space-between; align-items:center; gap:10px; margin-bottom:12px; }
+.updates-heading h2 { font-size:15px; margin:5px 0; }
+.updates-card .toggle-row { margin:10px 0; }
+.new-update-card { margin-top:12px; padding:12px; border-radius:12px; border:1px solid rgba(79,140,255,.32); background:rgba(79,140,255,.08); }
+.release-notes { white-space:pre-wrap; overflow-wrap:anywhere; user-select:text; max-height:140px; overflow-y:auto; font-size:12px; line-height:1.5; }
+.update-actions { display:flex; flex-wrap:wrap; align-items:center; gap:7px; }
+.update-actions button { font-size:12px; padding:8px 10px; }
+.download-progress { display:flex; align-items:center; gap:8px; font-size:11px; margin:12px 0; }
+.download-progress progress { flex:1; width:100%; accent-color:var(--accent); }
+.hidden { display:none !important; }

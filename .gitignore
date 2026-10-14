@@ -8,3 +8,17 @@ release/
 src-backup/
 user-data/
 sessions/
+config.json
+config.json.bak
+*.tmp
+
+# Materiais de assinatura e saída
+*.pfx
+*.p12
+*.pem
+*.key
+*.cer
+*.crt
+*.p7b
+*.snk
+*.sig

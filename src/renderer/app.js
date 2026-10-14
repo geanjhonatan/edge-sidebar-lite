@@ -15,6 +15,8 @@ const elements = {
   dockButton: document.getElementById('dockButton'),
   dockedInput: document.getElementById('dockedInput'),
   reserveSpaceInput: document.getElementById('reserveSpaceInput'),
+  startWithWindowsInput: document.getElementById('startWithWindowsInput'),
+  startWithWindowsNote: document.getElementById('startWithWindowsNote'),
   appBarFeedback: document.getElementById('appBarFeedback'),
   switchSideButton: document.getElementById('switchSideButton'),
   settingsButton: document.getElementById('settingsButton'),
@@ -30,7 +32,24 @@ const elements = {
   alwaysOnTopInput: document.getElementById('alwaysOnTopInput'),
   addSiteInSettingsButton: document.getElementById('addSiteInSettingsButton'),
   settingsSites: document.getElementById('settingsSites'),
-  settingsMessage: document.getElementById('settingsMessage')
+  settingsMessage: document.getElementById('settingsMessage'),
+  installedVersion: document.getElementById('installedVersion'),
+  updatesMessage: document.getElementById('updatesMessage'),
+  checkUpdatesButton: document.getElementById('checkUpdatesButton'),
+  autoCheckUpdatesInput: document.getElementById('autoCheckUpdatesInput'),
+  autoDownloadUpdatesInput: document.getElementById('autoDownloadUpdatesInput'),
+  installOnQuitInput: document.getElementById('installOnQuitInput'),
+  newUpdateCard: document.getElementById('newUpdateCard'),
+  newUpdateTitle: document.getElementById('newUpdateTitle'),
+  newUpdateNotes: document.getElementById('newUpdateNotes'),
+  updateSecurityNotice: document.getElementById('updateSecurityNotice'),
+  updateProgressWrap: document.getElementById('updateProgressWrap'),
+  updateProgress: document.getElementById('updateProgress'),
+  updateProgressLabel: document.getElementById('updateProgressLabel'),
+  downloadUpdateButton: document.getElementById('downloadUpdateButton'),
+  installUpdateButton: document.getElementById('installUpdateButton'),
+  laterUpdateButton: document.getElementById('laterUpdateButton'),
+  openReleasesButton: document.getElementById('openReleasesButton')
 };
 
 let state = null;
@@ -40,6 +59,7 @@ let draggedSiteId = null;
 let resizeSession = null;
 let pendingWidth = null;
 let resizeFrame = 0;
+let updateState = null;
 
 function describeError(error, fallback) {
   return error?.message || fallback;
@@ -90,6 +110,47 @@ function deriveNameFromUrl(rawUrl) {
   } catch {
     return 'Site';
   }
+}
+
+function renderUpdate(update) {
+  if (!update) return;
+  updateState = update;
+  elements.installedVersion.textContent = `v${update.version || '—'}`;
+  elements.updatesMessage.textContent = update.message || 'Verificações disponíveis.';
+  elements.checkUpdatesButton.disabled = ['checking', 'downloading'].includes(update.status);
+  const prefs = update.preferences || {};
+  elements.autoCheckUpdatesInput.checked = prefs.autoCheck !== false;
+  elements.autoDownloadUpdatesInput.checked = Boolean(prefs.autoDownload);
+  elements.installOnQuitInput.checked = Boolean(prefs.installOnQuit);
+  elements.autoDownloadUpdatesInput.disabled = !update.secureInstall;
+  elements.installOnQuitInput.disabled = !update.secureInstall;
+  const visible = Boolean(update.available || update.ready) && (update.ready || update.latestVersion !== prefs.postponedVersion);
+  elements.newUpdateCard.classList.toggle('hidden', !visible);
+  if (!visible) return;
+  elements.newUpdateTitle.textContent = `🚀 Nova atualização disponível! Edge Sidebar Lite v${update.latestVersion}`;
+  // Nunca interpretar release notes como HTML: são conteúdo externo não confiável.
+  elements.newUpdateNotes.textContent = update.notes || 'Melhorias e correções. Consulte o GitHub Releases.';
+  elements.downloadUpdateButton.disabled = !update.secureInstall || update.status === 'downloading' || update.ready;
+  elements.downloadUpdateButton.classList.toggle('hidden', Boolean(update.ready));
+  elements.installUpdateButton.classList.toggle('hidden', !update.ready);
+  elements.updateProgressWrap.classList.toggle('hidden', !['downloading', 'downloaded'].includes(update.status));
+  const progress = Math.max(0, Math.min(100, Number(update.progress) || 0));
+  elements.updateProgress.value = progress;
+  elements.updateProgressLabel.textContent = `${Math.round(progress)}%`;
+  elements.updateSecurityNotice.textContent = update.secureInstall
+    ? 'Instalador verificado por assinatura do publicador. Confirme antes de reiniciar.'
+    : 'Download/instalação automática desativados nesta prévia: requerem instalador assinado e validação no Windows. Você pode acompanhar as Releases no GitHub.';
+}
+
+async function saveUpdatePreferences() {
+  const prefs = {
+    autoCheck: elements.autoCheckUpdatesInput.checked,
+    autoDownload: elements.autoDownloadUpdatesInput.checked,
+    installOnQuit: elements.installOnQuitInput.checked,
+    postponedVersion: updateState?.preferences?.postponedVersion || ''
+  };
+  const saved = await window.sidebarAPI.setUpdatePreferences(prefs);
+  renderUpdate(saved);
 }
 
 function renderNavigation(navigation = {}) {
@@ -144,6 +205,7 @@ function render(nextState) {
   if (settingsOpen) {
     syncSettingsChrome();
   }
+  renderUpdate(state.updates);
 }
 
 function renderSiteButtons(activeSiteId) {
@@ -153,8 +215,8 @@ function renderSiteButtons(activeSiteId) {
     const button = document.createElement('button');
     button.type = 'button';
     button.className = 'site-button';
-    button.title = site.label;
-    button.setAttribute('aria-label', site.label);
+    button.title = site.playingAudio ? `${site.label} — 🔊 áudio em reprodução (aba protegida)` : site.label;
+    button.setAttribute('aria-label', site.playingAudio ? `${site.label}, áudio em reprodução` : site.label);
     button.classList.toggle('active', site.id === activeSiteId);
 
     if (site.faviconUrl) {
@@ -175,6 +237,15 @@ function renderSiteButtons(activeSiteId) {
       fallback.className = 'site-fallback';
       fallback.textContent = fallbackSymbol(site);
       button.appendChild(fallback);
+    }
+
+    if (site.playingAudio) {
+      const audioBadge = document.createElement('span');
+      audioBadge.className = 'site-audio-badge';
+      audioBadge.textContent = '🔊';
+      audioBadge.setAttribute('aria-hidden', 'true');
+      audioBadge.title = 'Áudio em reprodução — aba preservada';
+      button.appendChild(audioBadge);
     }
 
     const caption = document.createElement('span');
@@ -215,6 +286,13 @@ function syncSettingsChrome() {
   if (!elements.reserveSpaceInput.dataset.dirty) {
     elements.reserveSpaceInput.checked = state.window.reserveSpace !== false;
   }
+  if (!elements.startWithWindowsInput.dataset.dirty) {
+    elements.startWithWindowsInput.checked = Boolean(state.window.startWithWindows);
+  }
+  elements.startWithWindowsInput.disabled = !state.autostartSupported;
+  elements.startWithWindowsNote.textContent = state.autostartSupported
+    ? 'Ativa a inicialização automática no login (pode ser desativada aqui).'
+    : 'Disponível somente no .exe instalado no Windows.';
   elements.reserveSpaceInput.disabled = !elements.dockedInput.checked;
   const shouldReserve = elements.dockedInput.checked && elements.reserveSpaceInput.checked;
   elements.appBarFeedback.textContent = state.appBar?.error && shouldReserve
@@ -381,6 +459,7 @@ async function openSettings({ addSite = false } = {}) {
   delete elements.alwaysOnTopInput.dataset.dirty;
   delete elements.dockedInput.dataset.dirty;
   delete elements.reserveSpaceInput.dataset.dirty;
+  delete elements.startWithWindowsInput.dataset.dirty;
   delete elements.sideInput.dataset.dirty;
   delete elements.panelWidthNumber.dataset.dirty;
   syncSettingsChrome();
@@ -434,6 +513,7 @@ async function saveSettings(event) {
         alwaysOnTop: elements.alwaysOnTopInput.checked,
         docked: elements.dockedInput.checked,
         reserveSpace: elements.reserveSpaceInput.checked,
+        startWithWindows: elements.startWithWindowsInput.checked,
         side: elements.sideInput.value,
         panelWidth: width
       },
@@ -516,6 +596,7 @@ async function initialize() {
   window.sidebarAPI.onStateUpdated((nextState) => {
     render(nextState);
   });
+  window.sidebarAPI.onUpdatesState((update) => renderUpdate(update));
   window.sidebarAPI.onNavigationUpdated((navigation) => {
     // Atualiza só a barra de navegação; não recria ícones a cada evento de site.
     if (state) state.navigation = navigation;
@@ -586,6 +667,26 @@ async function initialize() {
   });
   elements.settingsForm.addEventListener('submit', saveSettings);
 
+  elements.checkUpdatesButton.addEventListener('click', () => {
+    runUiTask(window.sidebarAPI.checkUpdates().then(renderUpdate), 'Falha ao procurar atualização.');
+  });
+  for (const input of [elements.autoCheckUpdatesInput, elements.autoDownloadUpdatesInput, elements.installOnQuitInput]) {
+    input.addEventListener('change', () => runUiTask(saveUpdatePreferences(), 'Falha ao salvar as preferências de atualização.'));
+  }
+  elements.downloadUpdateButton.addEventListener('click', () => {
+    runUiTask(window.sidebarAPI.downloadUpdate().then(renderUpdate), 'Download indisponível.');
+  });
+  elements.installUpdateButton.addEventListener('click', () => {
+    runUiTask(window.sidebarAPI.installUpdate().then(renderUpdate), 'Falha ao instalar a atualização.');
+  });
+  elements.laterUpdateButton.addEventListener('click', () => {
+    runUiTask(window.sidebarAPI.postponeUpdate().then(renderUpdate), 'Falha ao adiar atualização.');
+    elements.newUpdateCard.classList.add('hidden');
+  });
+  elements.openReleasesButton.addEventListener('click', () => {
+    runUiTask(window.sidebarAPI.openReleases(), 'Não foi possível abrir o GitHub Releases.');
+  });
+
   elements.resizeHandle.addEventListener('mousedown', beginResize);
   document.addEventListener('mousemove', handleResizeMove);
   document.addEventListener('mouseup', finishResize);
@@ -596,6 +697,7 @@ async function initialize() {
     elements.reserveSpaceInput.disabled = !event.target.checked;
   });
   elements.reserveSpaceInput.addEventListener('change', (event) => { event.target.dataset.dirty = 'true'; });
+  elements.startWithWindowsInput.addEventListener('change', (event) => { event.target.dataset.dirty = 'true'; });
   elements.sideInput.addEventListener('change', (event) => { event.target.dataset.dirty = 'true'; });
   elements.panelWidthRange.addEventListener('input', () => {
     elements.panelWidthNumber.dataset.dirty = 'true';

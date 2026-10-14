@@ -1,0 +1,51 @@
+# Este workflow fica disponível SOMENTE quando o usuário instalar um runner
+# Windows próprio com certificado ligado ao HSM/token. Não roda em PR/push.
+name: Signed Windows candidate (manual only)
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: signed-release
+  cancel-in-progress: false
+
+jobs:
+  signed-candidate:
+    if: github.ref == 'refs/heads/main'
+    runs-on: [self-hosted, windows, x64, code-signing]
+    environment: signed-release
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Validate lockfile
+        run: npm run lock:verify
+      - name: Reproducible install
+        run: npm ci --no-fund
+      - name: Source and release checks
+        run: |
+          npm run check
+          npm test
+          npm run release:preflight
+      - name: Signed NSIS candidate (no publishing)
+        run: npm run dist:signed
+        env:
+          EDGE_SIGN_CERT_NAME: ${{ vars.EDGE_SIGN_CERT_NAME }}
+          EDGE_SIGN_PUBLISHER: ${{ vars.EDGE_SIGN_PUBLISHER }}
+      - name: Upload signed candidate for private testing
+        uses: actions/upload-artifact@v4
+        with:
+          name: edge-sidebar-signed-candidate
+          path: |
+            dist/*.exe
+            dist/*.yml
+            dist/*.blockmap
+          if-no-files-found: error
+          retention-days: 7

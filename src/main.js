@@ -1,10 +1,14 @@
-const { app, BrowserWindow, Menu, Tray, WebContentsView, ipcMain, nativeImage, screen, session } = require('electron');
+const { app, BrowserWindow, Menu, Tray, WebContentsView, ipcMain, nativeImage, screen, session, dialog, shell, clipboard, Notification } = require('electron');
 const fs = require('node:fs/promises');
 const { existsSync, mkdirSync } = require('node:fs');
 const path = require('node:path');
 const { randomUUID } = require('node:crypto');
 const { pathToFileURL } = require('node:url');
 const { createWindowsAppBar } = require('./windows-appbar');
+const { createConfigStore } = require('./config-store');
+const { createUpdateService, sanitizeUpdatePrefs, RELEASES_PAGE } = require('./update-service');
+const updatePolicy = require('./update-security.json');
+const { safeWebLink, detectedBrowsers, launchBrowser, displayLink } = require('./browser-links');
 
 const SIDEBAR_WIDTH = 60;
 const NAVIGATION_BAR_HEIGHT = 46;
@@ -12,7 +16,8 @@ const RESIZE_HANDLE_WIDTH = 8;
 const DEFAULT_PANEL_WIDTH = 420;
 const MIN_PANEL_WIDTH = 320;
 const MAX_LIVE_VIEWS = 3;
-const MAX_PANEL_WIDTH = 780;
+const AUDIO_RECOVERY_GRACE_MS = 10_000; // evite descarte durante buffer ou pausa breve
+const MAX_PANEL_WIDTH = 2800; // teto absoluto; limite real depende da largura do monitor
 const FLOATING_HEIGHT = 720;
 const WINDOW_MARGIN = 16;
 const FAVICON_MAX_BYTES = 512 * 1024;
@@ -54,6 +59,9 @@ let shellUpdateTimer = null;
 
 const viewEntries = new Map();
 const configuredSessions = new Set();
+let configStore = null;
+let updateService = null;
+let initialUpdateTimer = null;
 
 function logError(scope, error) {
   const message = error instanceof Error ? error.stack || error.message : String(error);
@@ -97,12 +105,20 @@ function defaultConfig() {
       panelWidth: DEFAULT_PANEL_WIDTH,
       docked: false, // false = janela independente; true = barra fixa na borda do monitor
       reserveSpace: true, // quando fixada, reserva espaço real no desktop do Windows
+      startWithWindows: false, // disponível após instalar o .exe no Windows
       floatingPosition: null
     },
     activeSiteId: DEFAULT_SITES[0].id,
     sites: DEFAULT_SITES.map((site) => ({ ...site })),
-    appearance: sanitizeAppearance(DEFAULT_APPEARANCE)
+    appearance: sanitizeAppearance(DEFAULT_APPEARANCE),
+    updates: sanitizeUpdatePrefs()
   };
+}
+
+function applyLoginPreference() {
+  if (process.platform !== 'win32' || !app.isPackaged) return;
+  // With NSIS per-user installation the correct executable is process.execPath.
+  app.setLoginItemSettings({ openAtLogin: Boolean(config.window.startWithWindows), path: process.execPath });
 }
 
 function getConfigPath() {
@@ -224,11 +240,13 @@ function sanitizeConfig(candidate = {}) {
       panelWidth: sanitizeSavedPanelWidth(candidate.window?.panelWidth),
       docked: typeof candidate.window?.docked === 'boolean' ? candidate.window.docked : base.window.docked,
       reserveSpace: typeof candidate.window?.reserveSpace === 'boolean' ? candidate.window.reserveSpace : base.window.reserveSpace,
+      startWithWindows: typeof candidate.window?.startWithWindows === 'boolean' ? candidate.window.startWithWindows : base.window.startWithWindows,
       floatingPosition: sanitizeFloatingPosition(candidate.window?.floatingPosition)
     },
     activeSiteId,
     sites,
-    appearance: sanitizeAppearance(candidate.appearance)
+    appearance: sanitizeAppearance(candidate.appearance),
+    updates: sanitizeUpdatePrefs(candidate.updates)
   };
 }
 
@@ -236,20 +254,18 @@ async function loadConfig() {
   const filePath = getConfigPath();
   mkdirSync(path.dirname(filePath), { recursive: true });
   mkdirSync(getFaviconCacheDir(), { recursive: true });
-
-  if (!existsSync(filePath)) {
+  configStore = createConfigStore(filePath);
+  const stored = await configStore.read();
+  if (stored.source === 'new') {
     config = defaultConfig();
     await saveConfig();
-    return;
-  }
-
-  try {
-    const raw = await fs.readFile(filePath, 'utf8');
-    config = sanitizeConfig(JSON.parse(raw));
+  } else {
+    config = sanitizeConfig(stored.value);
     config.window.panelWidth = clampPanelWidth(config.window.panelWidth);
-  } catch {
-    config = defaultConfig();
-    await saveConfig();
+    if (stored.source === 'backup') {
+      console.warn('[edge-sidebar-lite] Configuração restaurada a partir do backup local.');
+      await saveConfig();
+    }
   }
 }
 
@@ -261,17 +277,21 @@ function getTargetDisplay() {
 }
 
 function getPanelWidthLimits(display = getTargetDisplay()) {
-  // Impede que valores antigos (como 1736 px) criem uma janela gigante.
+  // Com reserva ativa, workArea.width já exclui a própria AppBar; calcular
+  // sobre esse valor geraria redução progressiva da largura.
   const usableWidth = config?.window?.docked && config?.window?.reserveSpace && process.platform === 'win32'
     ? display.bounds.width : display.workArea.width;
-  const available = Math.max(220, usableWidth - SIDEBAR_WIDTH - RESIZE_HANDLE_WIDTH - WINDOW_MARGIN * 2);
-  const max = Math.max(220, Math.min(MAX_PANEL_WIDTH, available, Math.floor(usableWidth * 0.6)));
+  // Preserva ao menos 280px para a área de trabalho no modo fixado;
+  // em modo flutuante também impede que a janela ultrapasse o monitor.
+  const remainingDesktop = 280;
+  const available = Math.max(220, usableWidth - SIDEBAR_WIDTH - RESIZE_HANDLE_WIDTH - remainingDesktop);
+  const max = Math.max(220, Math.min(MAX_PANEL_WIDTH, available, Math.floor(usableWidth * 0.9)));
   return { min: Math.min(MIN_PANEL_WIDTH, max), max };
 }
 
 function sanitizeSavedPanelWidth(value) {
   const numeric = Number(value);
-  // Um valor herdado muito grande é provavelmente a configuração corrompida.
+  // Preserva larguras grandes legítimas, mas limita valores absurdos.
   if (!Number.isFinite(numeric) || numeric < 220 || numeric > MAX_PANEL_WIDTH) {
     return DEFAULT_PANEL_WIDTH;
   }
@@ -296,7 +316,8 @@ async function saveConfig() {
   config.window.panelWidth = clampPanelWidth(config.window.panelWidth);
   config.appearance = sanitizeAppearance(config.appearance);
   const filePath = getConfigPath();
-  await fs.writeFile(filePath, JSON.stringify(config, null, 2), 'utf8');
+  if (!configStore) configStore = createConfigStore(filePath);
+  await configStore.save(config);
 }
 
 function toPublicSite(site) {
@@ -304,7 +325,8 @@ function toPublicSite(site) {
     id: site.id,
     label: site.label,
     url: site.url,
-    faviconUrl: site.faviconPath ? pathToFileURL(site.faviconPath).toString() : null
+    faviconUrl: site.faviconPath ? pathToFileURL(site.faviconPath).toString() : null,
+    playingAudio: isAudioProtected(site.id)
   };
 }
 
@@ -318,6 +340,7 @@ function getPublicState() {
     },
     activeSiteId: config.activeSiteId,
     navigation: getNavigationState(),
+    autostartSupported: process.platform === 'win32' && Boolean(app.isPackaged),
     appBar: {
       supported: process.platform === 'win32',
       registered: Boolean(nativeAppBar?.state.registered),
@@ -325,6 +348,7 @@ function getPublicState() {
     },
     sites: config.sites.map(toPublicSite),
     appearance: sanitizeAppearance(config.appearance),
+    updates: updateService ? updateService.getState() : { version: app.getVersion?.() || require('../package.json').version, status: 'idle', preferences: config.updates },
     layout: {
       sidebarWidth: SIDEBAR_WIDTH,
       resizeHandleWidth: RESIZE_HANDLE_WIDTH,
@@ -510,6 +534,7 @@ function destroyView(siteId) {
   if (currentViewId === siteId) {
     removeCurrentView();
   }
+  if (entry.audioReleaseTimer) clearTimeout(entry.audioReleaseTimer);
 
   try {
     if (!entry.view.webContents.isDestroyed()) {
@@ -522,16 +547,61 @@ function destroyView(siteId) {
   viewEntries.delete(siteId);
 }
 
-function trimViewCache() {
-  if (viewEntries.size <= MAX_LIVE_VIEWS) {
-    return;
+function isAudioProtected(siteId) {
+  const entry = viewEntries.get(siteId);
+  if (!entry) return false;
+  const wc = entry.view.webContents;
+  // Prefer Electron's actual audio meter when available, rather than
+  // guessing from a page's media elements or inspecting remote DOM.
+  const actuallyAudible = !wc.isDestroyed() && Boolean(wc.isCurrentlyAudible?.());
+  return actuallyAudible || Boolean(entry.audioPlaying) || (entry.audioProtectedUntil || 0) > Date.now();
+}
+
+function updateAudioState(siteId, audible) {
+  const entry = viewEntries.get(siteId);
+  if (!entry) return;
+  // Do not mark non-audio pages as protected on generic media-paused events.
+  if (!audible && !entry.audioPlaying && !(entry.audioProtectedUntil > Date.now())) return;
+  if (entry.audioReleaseTimer) {
+    clearTimeout(entry.audioReleaseTimer);
+    entry.audioReleaseTimer = null;
   }
+  if (audible) {
+    entry.audioPlaying = true;
+    entry.audioProtectedUntil = 0;
+  } else {
+    entry.audioPlaying = false;
+    entry.audioProtectedUntil = Date.now() + AUDIO_RECOVERY_GRACE_MS;
+    entry.audioReleaseTimer = setTimeout(() => {
+      entry.audioReleaseTimer = null;
+      if (viewEntries.get(siteId) !== entry) return;
+      // A restart of playback cancels pending eviction.
+      if (entry.view.webContents.isCurrentlyAudible?.()) {
+        updateAudioState(siteId, true);
+        return;
+      }
+      entry.audioProtectedUntil = 0;
+      sendState();
+      trimViewCache();
+    }, AUDIO_RECOVERY_GRACE_MS + 25);
+    entry.audioReleaseTimer.unref?.();
+  }
+  sendState();
+  trimViewCache();
+}
+
+function trimViewCache() {
+  const protectedAudioCount = [...viewEntries.keys()].filter(isAudioProtected).length;
+  // Three regular views plus all audible ones: music must survive tab hopping.
+  const limit = MAX_LIVE_VIEWS + protectedAudioCount;
+  if (viewEntries.size <= limit) return;
 
   const candidates = [...viewEntries.entries()]
-    .filter(([siteId]) => siteId !== config.activeSiteId && siteId !== currentViewId)
+    .filter(([siteId]) => siteId !== config.activeSiteId &&
+      siteId !== currentViewId && !isAudioProtected(siteId))
     .sort((a, b) => a[1].lastUsed - b[1].lastUsed);
 
-  while (viewEntries.size > MAX_LIVE_VIEWS && candidates.length > 0) {
+  while (viewEntries.size > limit && candidates.length > 0) {
     const [siteId] = candidates.shift();
     destroyView(siteId);
   }
@@ -650,18 +720,171 @@ async function updateSiteFavicon(siteId, faviconCandidates = [], pageUrl = '') {
   }
 }
 
+// No automatic opening of links in external browsers. Every new-window link
+// must be explicitly approved by the user, with a browser of their choice.
+let linkDialogQueue = Promise.resolve();
+function queueLinkChoice(siteId, rawUrl) {
+  const safeUrl = safeWebLink(rawUrl);
+  if (!safeUrl) return;
+  const task = () => chooseLinkDestination(siteId, safeUrl);
+  linkDialogQueue = linkDialogQueue.then(task, task).catch((error) => logError('external-link', error));
+}
+
+async function chooseLinkDestination(siteId, url, externalOnly = false) {
+  if (!mainWindow || mainWindow.isDestroyed()) return;
+  const candidates = detectedBrowsers();
+  const buttons = [
+    ...(!externalOnly ? ['Abrir aqui na Sidebar'] : []),
+    'Navegador padrão',
+    ...candidates.map((browser) => browser.name),
+    'Copiar link',
+    'Cancelar'
+  ];
+  const cancelId = buttons.length - 1;
+  const result = await dialog.showMessageBox(mainWindow, {
+    type: 'question',
+    title: 'Abrir link — Edge Sidebar Lite',
+    message: 'Onde você quer abrir este link?',
+    detail: displayLink(url),
+    buttons,
+    defaultId: cancelId,
+    cancelId,
+    noLink: true
+  });
+  if (result.response === cancelId || result.response < 0) return;
+  const selected = buttons[result.response];
+  if (!externalOnly && selected === 'Abrir aqui na Sidebar') {
+    if (!url.startsWith('https:')) return;
+    const entry = viewEntries.get(siteId);
+    if (entry && !entry.view.webContents.isDestroyed()) {
+      await entry.view.webContents.loadURL(url);
+    }
+  } else if (selected === 'Navegador padrão') {
+    await shell.openExternal(url);
+  } else if (candidates.some((browser) => browser.name === selected)) {
+    await launchBrowser(candidates.find((browser) => browser.name === selected), url);
+  } else if (selected === 'Copiar link') {
+    clipboard.writeText(url);
+  }
+}
+
+// Google pode bloquear OAuth/One Tap em user-agents incorporados.
+// Não falsificar user-agent nem tentar transferir cookies de outro navegador.
+const googlePromptAt = new Map();
+function isGoogleEmbeddedLogin(rawUrl) {
+  const url = safeWebLink(rawUrl);
+  if (!url) return false;
+  const parsed = new URL(url);
+  return parsed.hostname === 'accounts.google.com' &&
+    (/^\/gsi\//.test(parsed.pathname) || /^\/o\/oauth2\//.test(parsed.pathname) || /^\/signin\/oauth/.test(parsed.pathname));
+}
+function queueExternalLoginHelp(siteId) {
+  const now = Date.now();
+  if (now - (googlePromptAt.get(siteId) || 0) < 1800) return;
+  googlePromptAt.set(siteId, now);
+  const task = () => showExternalLoginHelp(siteId);
+  linkDialogQueue = linkDialogQueue.then(task, task).catch((error) => logError('google-oauth', error));
+}
+async function showExternalLoginHelp(siteId) {
+  if (!mainWindow || mainWindow.isDestroyed()) return;
+  const site = getSiteConfig(siteId);
+  const homeUrl = safeWebLink(site?.url);
+  if (!homeUrl) return;
+  const buttons = ['Abrir site no navegador padrão', 'Escolher navegador', 'Cancelar'];
+  const { response } = await dialog.showMessageBox(mainWindow, {
+    type: 'info', title: 'Entrar com Google',
+    message: 'Login do Google pode não funcionar dentro da Sidebar.',
+    detail: 'O Google restringe autenticação em navegadores incorporados. Abra o site original no navegador habitual e faça login por lá. A sessão não será transferida automaticamente para a Sidebar.',
+    buttons, defaultId: 0, cancelId: 2, noLink: true
+  });
+  if (response === 0) await shell.openExternal(homeUrl);
+  if (response === 1) await chooseLinkDestination(siteId, homeUrl, true);
+}
+
+// Menu de contexto nativo para a web incorporada e a interface da Sidebar.
+function openContextMenu(siteId, webContents, params = {}, localUi = false) {
+  if (!mainWindow || mainWindow.isDestroyed()) return;
+  const template = [];
+  const link = safeWebLink(params.linkURL);
+  const mediaLink = safeWebLink(params.srcURL);
+  const edit = params.editFlags || {};
+  if (link) {
+    template.push({ label: 'Abrir link aqui', enabled: link.startsWith('https:') && !isGoogleEmbeddedLogin(link) && !localUi,
+      click: () => fireAndForget('context:open-here', webContents.loadURL(link)) });
+    template.push({ label: 'Abrir link em outro navegador', click: () => queueLinkChoice(siteId, link) });
+    template.push({ label: 'Copiar endereço do link', click: () => clipboard.writeText(link) });
+    template.push({ type: 'separator' });
+  }
+  if (mediaLink && params.mediaType === 'image') {
+    template.push({ label: 'Copiar endereço da imagem', click: () => clipboard.writeText(mediaLink) });
+    template.push({ type: 'separator' });
+  }
+  if (params.isEditable) {
+    template.push({ role: 'undo', label: 'Desfazer', enabled: Boolean(edit.canUndo) });
+    template.push({ role: 'redo', label: 'Refazer', enabled: Boolean(edit.canRedo) });
+    template.push({ type: 'separator' });
+    template.push({ role: 'cut', label: 'Recortar', enabled: Boolean(edit.canCut) });
+    template.push({ role: 'copy', label: 'Copiar', enabled: Boolean(edit.canCopy) });
+    template.push({ role: 'paste', label: 'Colar', enabled: Boolean(edit.canPaste) });
+    template.push({ role: 'selectAll', label: 'Selecionar tudo' });
+    template.push({ type: 'separator' });
+  } else if (params.selectionText) {
+    template.push({ role: 'copy', label: 'Copiar seleção' });
+    template.push({ type: 'separator' });
+  }
+  if (!localUi && webContents && !webContents.isDestroyed()) {
+    const history = navigationAPI(webContents);
+    template.push({ label: 'Voltar', enabled: Boolean(history?.canGoBack?.()), click: () => history.goBack() });
+    template.push({ label: 'Avançar', enabled: Boolean(history?.canGoForward?.()), click: () => history.goForward() });
+    template.push({ label: 'Recarregar', click: () => webContents.reload() });
+    const currentUrl = safeWebLink(webContents.getURL?.());
+    if (currentUrl) template.push({ label: 'Abrir página no navegador', click: () => queueLinkChoice(siteId, currentUrl) });
+  } else {
+    template.push({ label: 'Configurações', click: () => {
+      settingsOpen = true;
+      fireAndForget('context:settings', showActiveView());
+      sendState();
+    } });
+  }
+  if (template.at(-1)?.type === 'separator') template.pop();
+  if (template.length) Menu.buildFromTemplate(template).popup({ window: mainWindow });
+}
+
 function configureView(siteId, view) {
   const wc = view.webContents;
-  wc.setWindowOpenHandler(() => ({ action: 'deny' }));
+  // Electron emits this when real audio starts/stops, including iframes.
+  // Avoid injecting scripts or changing untrusted pages.
+  wc.on('audio-state-changed', (event) => {
+    updateAudioState(siteId, Boolean(event?.audible));
+  });
+  wc.on('media-started-playing', () => {
+    // Compatibility path: the audio-state-changed event is authoritative.
+    if (wc.isCurrentlyAudible?.()) updateAudioState(siteId, true);
+  });
+  wc.on('media-paused', () => {
+    if (!wc.isCurrentlyAudible?.()) updateAudioState(siteId, false);
+  });
+  wc.setWindowOpenHandler(({ url }) => {
+    if (isGoogleEmbeddedLogin(url)) setImmediate(() => queueExternalLoginHelp(siteId));
+    else if (safeWebLink(url)) setImmediate(() => queueLinkChoice(siteId, url));
+    return { action: 'deny' };
+  });
+  wc.on('context-menu', (_event, params) => openContextMenu(siteId, wc, params));
 
   wc.on('will-navigate', (event, targetUrl) => {
-    if (!allowNavigation(targetUrl)) {
+    if (isGoogleEmbeddedLogin(targetUrl)) {
+      event.preventDefault();
+      queueExternalLoginHelp(siteId);
+    } else if (!allowNavigation(targetUrl)) {
       event.preventDefault();
     }
   });
 
   wc.on('will-redirect', (event, targetUrl) => {
-    if (!allowNavigation(targetUrl)) {
+    if (isGoogleEmbeddedLogin(targetUrl)) {
+      event.preventDefault();
+      queueExternalLoginHelp(siteId);
+    } else if (!allowNavigation(targetUrl)) {
       event.preventDefault();
     }
   });
@@ -679,6 +902,7 @@ function configureView(siteId, view) {
   });
 
   wc.on('did-finish-load', () => {
+    if (isGoogleEmbeddedLogin(wc.getURL())) queueExternalLoginHelp(siteId);
     markViewUsed(siteId);
     if (currentViewId === siteId) sendNavigationState();
     fireAndForget(`favicon-fallback:${siteId}`, updateSiteFavicon(siteId, [], wc.getURL()));
@@ -724,7 +948,7 @@ function getOrCreateView(siteId) {
     return existing.view;
   }
   const view = createSiteView(siteId);
-  viewEntries.set(siteId, { view, lastUsed: Date.now() });
+  viewEntries.set(siteId, { view, lastUsed: Date.now(), audioPlaying: false, audioProtectedUntil: 0, audioReleaseTimer: null });
   return view;
 }
 
@@ -885,6 +1109,22 @@ function createTrayMenu() {
     },
     { type: 'separator' },
     {
+      label: 'Iniciar com o Windows (instalado)', type: 'checkbox',
+      enabled: process.platform === 'win32' && Boolean(app.isPackaged),
+      checked: Boolean(config.window.startWithWindows),
+      click: () => fireAndForget('tray:autostart', (async () => {
+        const previous = config.window.startWithWindows;
+        config.window.startWithWindows = !previous;
+        try { applyLoginPreference(); await saveConfig(); } catch (error) {
+          config.window.startWithWindows = previous;
+          refreshTrayMenu();
+          throw error;
+        }
+        refreshTrayMenu(); sendState();
+      })())
+    },
+    { type: 'separator' },
+    {
       label: 'Sair',
       click: () => {
         isQuitting = true;
@@ -906,6 +1146,83 @@ function refreshTrayMenu() {
     tray.setContextMenu(createTrayMenu());
   }
 }
+
+function setupUpdateService() {
+  const trustedSignedBuild = Boolean(updatePolicy.enabled &&
+    typeof updatePolicy.publisherName === 'string' && updatePolicy.publisherName.trim() &&
+    app.isPackaged && process.platform === 'win32');
+  let secureUpdater = null;
+  if (trustedSignedBuild) {
+    try {
+      secureUpdater = require('electron-updater').autoUpdater;
+    } catch (error) {
+      logError('updater:load', error);
+    }
+  }
+  updateService = createUpdateService({
+    currentVersion: app.getVersion?.() || require('../package.json').version,
+    isPackaged: Boolean(app.isPackaged),
+    installAuthorized: trustedSignedBuild,
+    updater: secureUpdater,
+    onState: () => {
+      if (mainWindow && !mainWindow.isDestroyed()) {
+        mainWindow.webContents.send('sidebar:updates-state', updateService.getState());
+      }
+    },
+    onAvailable: (update) => {
+      if (Notification?.isSupported?.() && app.isPackaged) {
+        const notice = new Notification({ title: 'Edge Sidebar Lite',
+          body: `Nova atualização disponível: v${update.latestVersion}. Abra Configurações para ver as novidades.` });
+        notice.on('click', () => {
+          if (!mainWindow || mainWindow.isDestroyed()) return;
+          mainWindow.show();
+          settingsOpen = true;
+          fireAndForget('updates:show-settings', showActiveView());
+          sendState();
+        });
+        notice.show();
+      }
+    }
+  });
+  updateService.setPrefs(config.updates);
+  if (config.updates.autoCheck && app.isPackaged) {
+    initialUpdateTimer = setTimeout(() => {
+      fireAndForget('updater:initial-check', updateService.check(false));
+    }, 20_000);
+    initialUpdateTimer.unref?.();
+  }
+}
+
+handleIpc('sidebar:updates-check', async () => updateService.check(true));
+handleIpc('sidebar:updates-get', () => updateService.getState());
+handleIpc('sidebar:updates-set-preferences', async (_event, value) => {
+  config.updates = sanitizeUpdatePrefs(value);
+  updateService.setPrefs(config.updates);
+  await saveConfig();
+  return updateService.getState();
+});
+handleIpc('sidebar:updates-later', async () => {
+  updateService.later();
+  config.updates = updateService.getState().preferences;
+  await saveConfig();
+  return updateService.getState();
+});
+handleIpc('sidebar:updates-download', () => updateService.download());
+handleIpc('sidebar:updates-install', async () => {
+  const state = updateService.getState();
+  if (!state.secureInstall || !state.ready) throw new Error('Instalação automática indisponível.');
+  const { response } = await dialog.showMessageBox(mainWindow, {
+    type: 'warning', title: 'Instalar atualização',
+    message: 'Deseja instalar agora? A Sidebar será fechada e qualquer áudio será interrompido.',
+    buttons: ['Cancelar', 'Instalar e reiniciar'], defaultId: 0, cancelId: 0, noLink: true
+  });
+  if (response === 1) {
+    isQuitting = true;
+    updateService.installNow();
+  }
+  return updateService.getState();
+});
+handleIpc('sidebar:updates-open-releases', () => shell.openExternal(RELEASES_PAGE));
 
 async function createMainWindow() {
   const { bounds } = getWindowLayout();
@@ -934,6 +1251,9 @@ async function createMainWindow() {
   });
 
   mainWindow.removeMenu();
+  // A interface HTML é um WebContents separado dos sites incorporados.
+  mainWindow.webContents.on('context-menu', (_event, params) =>
+    openContextMenu(config.activeSiteId, mainWindow.webContents, params, true));
   nativeAppBar = createWindowsAppBar(mainWindow, screen, () => {
     // Mensagens do shell podem chegar enquanto setBounds está em execução;
     // reagendar fora do WndProc e evitar atualizações em cascata.
@@ -1076,6 +1396,7 @@ handleIpc('sidebar:set-settings-open', async (_event, isOpen) => {
 });
 
 handleIpc('sidebar:save-settings', async (_event, nextSettings = {}) => {
+  const previousAutostart = config.window.startWithWindows;
   const previousSites = new Map(config.sites.map((site) => [site.id, site]));
   const merged = sanitizeConfig({
     window: {
@@ -1085,6 +1406,9 @@ handleIpc('sidebar:save-settings', async (_event, nextSettings = {}) => {
       panelWidth: nextSettings.window?.panelWidth,
       docked: typeof nextSettings.window?.docked === 'boolean' ? nextSettings.window.docked : config.window.docked,
       reserveSpace: typeof nextSettings.window?.reserveSpace === 'boolean' ? nextSettings.window.reserveSpace : config.window.reserveSpace,
+      startWithWindows: process.platform === 'win32' && app.isPackaged
+        ? Boolean(nextSettings.window?.startWithWindows)
+        : config.window.startWithWindows,
       floatingPosition: config.window.floatingPosition
     },
     activeSiteId: nextSettings.activeSiteId ?? config.activeSiteId,
@@ -1116,6 +1440,13 @@ handleIpc('sidebar:save-settings', async (_event, nextSettings = {}) => {
   }
 
   config = merged;
+  if (previousAutostart !== config.window.startWithWindows) {
+    try { applyLoginPreference(); } catch (error) {
+      config.window.startWithWindows = previousAutostart;
+      logError('windows-autostart', error);
+      throw new Error('Não foi possível configurar a inicialização automática.');
+    }
+  }
   if (!config.activeSiteId && config.sites.length > 0) {
     config.activeSiteId = config.sites[0].id;
   }
@@ -1147,6 +1478,8 @@ if (!singleInstanceLock) {
   });
   app.whenReady().then(async () => {
   await loadConfig();
+  setupUpdateService();
+  try { applyLoginPreference(); } catch (error) { logError('windows-autostart', error); }
   await createMainWindow();
   createTray();
 
@@ -1165,6 +1498,7 @@ if (!singleInstanceLock) {
 app.on('before-quit', () => {
   isQuitting = true;
   clearTimeout(shellUpdateTimer);
+  clearTimeout(initialUpdateTimer);
   nativeAppBar?.dispose();
   nativeAppBar = null;
 });

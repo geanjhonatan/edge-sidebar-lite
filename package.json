@@ -1,14 +1,18 @@
 {
   "name": "edge-sidebar-lite",
-  "version": "0.2.0",
-  "description": "Independent Windows 10 sidebar inspired by the old Microsoft Edge sidebar.",
+  "version": "0.4.0-beta.1",
+  "description": "Barra lateral Windows com prévia segura de atualizações via GitHub Releases",
   "main": "src/main.js",
   "type": "commonjs",
   "scripts": {
     "start": "electron .",
-    "check": "node --check src/main.js && node --check src/preload.js && node --check src/renderer/app.js",
-    "dist:win": "electron-builder --win nsis",
-    "test": "node test/layout.test.js && node test/appbar.test.js"
+    "check": "node --check src/main.js && node --check src/preload.js && node --check src/renderer/app.js && node --check src/update-service.js",
+    "dist:win": "electron-builder --win nsis --publish never",
+    "test": "node test/layout.test.js && node test/appbar.test.js && node test/browser-links.test.js && node test/config-store.test.js && node test/update-service.test.js && node test/signed-release.test.js",
+    "lock:sync": "npm install --package-lock-only --ignore-scripts --no-audit --no-fund",
+    "lock:verify": "node scripts/verify-lockfile.js",
+    "dist:signed": "node scripts/build-signed.js",
+    "release:preflight": "node test/signed-release.test.js"
   },
   "build": {
     "appId": "com.geanr.edgesidebarlite",
@@ -33,17 +37,29 @@
     "nsis": {
       "oneClick": false,
       "perMachine": false,
-      "allowToChangeInstallationDirectory": true
-    }
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true,
+      "shortcutName": "Edge Sidebar Lite"
+    },
+    "artifactName": "${productName}-Setup-${version}-${arch}.${ext}",
+    "publish": [
+      {
+        "provider": "github",
+        "owner": "geanjhonatan",
+        "repo": "edge-sidebar-lite",
+        "releaseType": "release"
+      }
+    ]
   },
   "devDependencies": {
-    "electron": "30.5.1",
-    "electron-builder": "24.13.3"
-  },
-  "allowScripts": {
-    "electron@30.5.1": true
+    "electron": "44.7.1",
+    "electron-builder": "26.17.0"
   },
   "optionalDependencies": {
     "koffi": "^3.3.3"
+  },
+  "dependencies": {
+    "electron-updater": "6.8.10"
   }
 }
