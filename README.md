@@ -10,6 +10,17 @@ Acesse seus sites favoritos sem abrir um navegador completo. Fixe a barra à esq
 > [!IMPORTANT]
 > **Versão beta para testes. Ainda não existe uma distribuição oficialmente assinada.** O código de assinatura e as verificações de segurança estão preparados, mas exigem um certificado de assinatura de código legítimo. O download e a instalação automáticos de executáveis permanecem **desabilitados** nesta versão. Este é um projeto independente, sem vínculo com a Microsoft.
 
+## 📥 Baixar Edge Sidebar Lite — Windows 10/11 (64 bits)
+
+### **[⬇️ BAIXAR INSTALADOR .EXE — clique para baixar, sem cadastro](https://github.com/geanjhonatan/edge-sidebar-lite/releases/download/v0.4.0-beta.1/Edge.Sidebar.Lite-Setup-0.4.0-beta.1-x64.exe)**
+
+**Versão:** `0.4.0-beta.1` · **Tamanho:** ~121 MB · **Instalação:** baixe e execute o instalador; **não precisa de conta GitHub, Node.js ou npm**.
+
+[📋 Novidades e informações da versão](https://github.com/geanjhonatan/edge-sidebar-lite/releases/tag/v0.4.0-beta.1) · [🔐 SHA-256 do instalador](https://github.com/geanjhonatan/edge-sidebar-lite/releases/download/v0.4.0-beta.1/SHA256SUMS.txt)
+
+> [!WARNING]
+> **Beta experimental não assinada digitalmente.** O Windows SmartScreen pode alertar sobre o executável; verifique a origem antes de instalar e não ignore alertas sem avaliação. Testada em ambiente de desenvolvimento controlado. Atualizações automáticas do programa continuam bloqueadas até existir assinatura confiável. Esta é uma **pré-release**, não uma versão estável oficialmente assinada.
+
 ## 📸 Capturas de tela
 
 <p align="center">
@@ -34,17 +45,6 @@ Acesse seus sites favoritos sem abrir um navegador completo. Fixe a barra à esq
 | 🎨 Aparência | Largura, posição, cores e preferências. |
 
 **Importante:** sites incorporados podem restringir login, autenticação Google, permissões ou reprodução. Quando um login externo não é compatível, utilize o navegador habitual — a sessão externa não é transferida à Sidebar.
-
-## 📥 Baixar instalador (.exe) — v0.4.0-beta.1
-
-**[⬇️ BAIXAR EDGE SIDEBAR LITE PARA WINDOWS (INSTALADOR BETA)](https://github.com/geanjhonatan/edge-sidebar-lite/actions/runs/38495754815)**
-
-O instalador foi **gerado com sucesso no Windows pelo GitHub Actions**, mas **não possui assinatura digital**. É uma compilação **experimental**, destinada a testes controlados, não uma Release estável.
-
-**Como baixar:** abra o link acima, entre no GitHub se necessário, procure a seção **Artifacts**, clique em `edge-sidebar-lite-windows-installer`, extraia o arquivo ZIP e execute o `.exe` incluído. Não é necessário instalar Node.js para usar a versão empacotada.
-
-> [!WARNING]
-> O arquivo executável ainda não é assinado e pode acionar avisos do Windows SmartScreen. Confira sempre a origem e não ignore alertas sem verificar a procedência. **Artefatos do GitHub Actions expiram**; quando isso acontecer, consulte os [builds mais recentes](https://github.com/geanjhonatan/edge-sidebar-lite/actions) ou gere o instalador localmente. O sistema de atualização automática continua desativado até concluirmos a assinatura.
 
 ## 💻 Instalação para desenvolvedores
 
@@ -73,7 +73,7 @@ O aplicativo tem uma seção **Configurações → Atualizações**, que permite
 
 - `src/update-security.json` mantém `enabled: false` até configurar e validar o certificado do publicador.
 - Não basta alterar essa opção: é necessário assinar, testar o fluxo de instalação e confirmar a identidade da assinatura.
-- **Ainda não existe nenhuma GitHub Release pública oficial**; a aba Releases será utilizada após a validação de segurança.
+- Existe uma **GitHub Release pública de teste (pré-release não assinada)**, mas ainda não há Release estável e assinada. A instalação automática continua bloqueada.
 
 Consulte [o guia de atualizações](docs/ETAPA3-ATUALIZACOES.md) e [o guia de distribuição assinada](docs/ETAPA4-DISTRIBUICAO-ASSINADA.md). **Não envie chaves privadas, PINs ou certificados com chave privada para Issues ou pull requests.**
 
