@@ -1,8 +1,8 @@
 # Changelog
 
-Todas as alterações relevantes serão registradas aqui. Este histórico refere-se à cópia de desenvolvimento; nenhuma alteração foi publicada no GitHub.
+Todas as alterações relevantes serão registradas aqui. Este histórico acompanha as versões do código-fonte. A v0.4.0-beta.1 é uma prévia sem instalador assinado, não uma Release estável.
 
-## [0.4.0-beta.1 + Etapa 4] — Preparação local para distribuição assinada (não publicada)
+## [0.4.0-beta.1 + Etapa 4] — Preparação da distribuição assinada (código publicado)
 
 ### Adicionado
 - Configuração de assinatura Authenticode para `electron-builder` v26, exigindo `forceCodeSigning`.
@@ -14,9 +14,9 @@ Todas as alterações relevantes serão registradas aqui. Este histórico refere
 
 ### Limitações
 - Ainda não há certificado de publicador fornecido/configurado, portanto **nenhum executável foi assinado**.
-- Registro npm indisponível no ambiente de preparação: lockfile ainda requer sincronização no Windows.
+- Lockfile sincronizado e verificado em ambiente de CI; testes do instalador assinado ainda pendentes.
 
-## [0.4.0-beta.1] — Prévia local (não publicada)
+## [0.4.0-beta.1] — Prévia do sistema de atualizações
 
 ### Adicionado
 - Central de atualizações na interface de Configurações.
@@ -33,7 +33,7 @@ Todas as alterações relevantes serão registradas aqui. Este histórico refere
 - Sessões por site, indicador de música, AppBar, config atômica e proteção de permissões preservados.
 
 ### Pendente antes do lançamento
-- Sincronização do lockfile via registro npm e testes com `npm ci`.
+- Executar `npm audit` no CI e revisar eventuais alertas; o lockfile já foi sincronizado.
 - Configuração de certificado Authenticode de publicador e teste de atualizações entre dois instaladores no Windows.
 - Verificação de assinatura e auditoria de dependências, assinatura dos metadados e release com latest.yml / blockmap.
 
