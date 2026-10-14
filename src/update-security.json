@@ -1,0 +1,5 @@
+{
+  "enabled": false,
+  "publisherName": "",
+  "notes": "Habilite somente após configurar Authenticode, validar publicador e testar rollback no Windows."
+}

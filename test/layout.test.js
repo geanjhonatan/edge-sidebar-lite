@@ -22,6 +22,11 @@ fs.writeFileSync(config, JSON.stringify({
 let windowInstance;
 const sentMessages = [];
 const ipc = new Map();
+const linkDialogs = [];
+const nativeMenus = [];
+const externalOpens = [];
+const browserOpens = [];
+let nextDialogChoice = null;
 const screen = new EventEmitter();
 const display = { id: 1, workArea: { x: 0, y: 0, width: 1920, height: 1040 } };
 screen.getPrimaryDisplay = () => display;
@@ -80,13 +85,15 @@ class MockView {
     this.webContents = new EventEmitter();
     this.webContents.isDestroyed = () => false;
     this.webContents.destroy = () => {};
-    this.webContents.setWindowOpenHandler = () => {};
+    this.webContents.setWindowOpenHandler = (handler) => { this.webContents.windowOpenHandler = handler; };
     const wc = this.webContents;
     wc.entries = [];
     wc.index = -1;
     wc.reloadCount = 0;
     wc.getURL = () => wc.entries[wc.index] || '';
     wc.isLoading = () => false;
+    wc.audible = false;
+    wc.isCurrentlyAudible = () => wc.audible;
     wc.canGoBack = () => wc.index > 0;
     wc.canGoForward = () => wc.index < wc.entries.length - 1;
     wc.goBack = () => { if (wc.canGoBack()) { wc.index -= 1; wc.emit('did-navigate', {}, wc.getURL()); } };
@@ -114,22 +121,25 @@ app.requestSingleInstanceLock = () => true;
 app.quit = () => {};
 const electron = {
   app, BrowserWindow: MockWindow,
-  Menu: { buildFromTemplate: (items) => items }, Tray: MockTray, WebContentsView: MockView,
+  Menu: { buildFromTemplate: (items) => ({ popup: () => nativeMenus.push(items) }) }, Tray: MockTray, WebContentsView: MockView,
   ipcMain: { handle: (key, fn) => ipc.set(key, fn) }, nativeImage: {
     createFromDataURL: () => fakeImage,
     createFromBuffer: () => fakeImage
-  }, screen, session
+  }, screen, session,
+  dialog: { showMessageBox: async (_window, opts) => { linkDialogs.push(opts); const choice = nextDialogChoice ?? opts.cancelId; nextDialogChoice = null; return { response: choice }; } },
+  shell: { openExternal: async (url) => { externalOpens.push(url); } },
+  clipboard: { writeText() {} }
 };
 const sourcePath = path.join(__dirname, '..', 'src', 'main.js');
 const capturedErrors = [];
 const sandbox = {
-  require: (name) => name === 'electron' ? electron : (name === './windows-appbar' ? require(path.join(__dirname, '..', 'src', 'windows-appbar.js')) : require(name)),
+  require: (name) => name === 'electron' ? electron : (name === './windows-appbar' ? require(path.join(__dirname, '..', 'src', 'windows-appbar.js')) : (name === './browser-links' ? { ...require(path.join(__dirname, '..', 'src', 'browser-links.js')), detectedBrowsers: () => [{ name: 'Vivaldi', executable: 'C:\\fake\\vivaldi.exe' }], launchBrowser: async (browser, url) => browserOpens.push([browser.name, url]) } : (name === './config-store' ? require(path.join(__dirname, '..', 'src', 'config-store.js')) : (name === './update-service' ? require(path.join(__dirname, '..', 'src', 'update-service.js')) : (name === './update-security.json' ? require(path.join(__dirname, '..', 'src', 'update-security.json')) : require(name)))))),
   __dirname: path.dirname(sourcePath),
-  Buffer, URL, console: { ...console, error: (...args) => capturedErrors.push(args.join(" ")) }, setTimeout, clearTimeout,
+  Buffer, URL, console: { ...console, error: (...args) => capturedErrors.push(args.join(" ")) }, setTimeout, clearTimeout, setImmediate,
   process: { on() {} },
   fetch: async () => ({ ok: false })
 };
-vm.runInNewContext(fs.readFileSync(sourcePath, 'utf8') + '\nglobalThis.__sidebarTest = { getPublicState };', sandbox);
+vm.runInNewContext(fs.readFileSync(sourcePath, 'utf8') + '\nglobalThis.__sidebarTest = { getPublicState, viewEntries, trimViewCache };', sandbox);
 
 async function waitForReady() {
   for (let i=0; i<30 && !windowInstance; i++) await new Promise((r) => setTimeout(r, 10));
@@ -146,12 +156,55 @@ async function invoke(channel, ...args) {
   try {
     await waitForReady();
     const readState = () => sandbox.__sidebarTest.getPublicState();
-    assert.equal(readState().window.panelWidth, 420, 'corrigir largura antiga 1736');
-    assert.deepEqual(windowInstance.bounds, { x: 1416, y: 16, width: 488, height: 720 });
+    assert.equal(readState().window.panelWidth, 1572, 'largura excedente limitada à área disponível');
+    assert.equal(readState().layout.maxPanelWidth, 1572, 'limite baseado no monitor, maior que 780px');
+    assert.equal(readState().updates.version, '0.4.0-beta.1');
+    assert.equal(readState().updates.secureInstall, false, 'sem assinatura não autoriza baixar/instalar');
+    await assert.rejects(invoke('sidebar:updates-download'), /bloqueado/i);
+    const prefs = await invoke('sidebar:updates-set-preferences', { autoCheck: false, installOnQuit: true });
+    assert.equal(prefs.preferences.autoCheck, false);
+    assert.equal(readState().updates.preferences.autoCheck, false);
+    assert.equal(readState().updates.preferences.installOnQuit, true);
+    const savedPrefFile = JSON.parse(fs.readFileSync(path.join(temp, 'config.json'), 'utf8'));
+    assert.equal(savedPrefFile.updates.autoCheck, false);
+
+    assert.deepEqual(windowInstance.bounds, { x: 264, y: 16, width: 1640, height: 720 });
     assert.equal(windowInstance.children.length, 1);
-    assert.equal(windowInstance.children[0].bounds.width, 420);
+    assert.equal(windowInstance.children[0].bounds.width, 1572);
     assert.equal(windowInstance.children[0].bounds.y, 46, 'reservar espaço clicável para a navegação');
     assert.equal(windowInstance.children[0].bounds.height, 674);
+
+    // Links _blank não somem: abre seletor nativo, não cria janela arbitrária.
+    const newWindow = windowInstance.children[0].webContents.windowOpenHandler;
+    assert.equal(newWindow({ url: 'https://github.com/openai/' }).action, 'deny');
+    await new Promise((resolve) => setTimeout(resolve, 15));
+    assert.equal(linkDialogs.length, 1);
+    assert.match(linkDialogs[0].message, /Onde você quer abrir/);
+    assert.ok(linkDialogs[0].buttons.includes('Navegador padrão'));
+    nextDialogChoice = 2; // Seleciona Vivaldi quando o usuário aprova um link.
+    newWindow({ url: 'https://example.com/selecionado' });
+    await new Promise((resolve) => setTimeout(resolve, 15));
+    assert.deepEqual(browserOpens.at(-1), ['Vivaldi', 'https://example.com/selecionado']);
+    assert.equal(newWindow({ url: 'javascript:alert(1)' }).action, 'deny');
+    await new Promise((resolve) => setTimeout(resolve, 15));
+    assert.equal(linkDialogs.length, 2, 'protocolo inseguro não abre seletor');
+
+    // Menu de contexto nativo dos sites, sem liberar URLs inseguras.
+    const embedded = windowInstance.children[0].webContents;
+    embedded.emit('context-menu', {}, { linkURL: 'https://github.com/example', selectionText: '' });
+    assert.ok(nativeMenus.length > 0, 'menu de contexto da view apareceu');
+    assert.ok(nativeMenus.at(-1).some((item) => item.label === 'Copiar endereço do link'));
+    embedded.emit('context-menu', {}, { linkURL: 'javascript:alert(1)', selectionText: 'teste' });
+    assert.equal(nativeMenus.at(-1).some((item) => item.label === 'Abrir link aqui'), false);
+    // O login Google One Tap não deve abrir uma página branca incorporada.
+    let prevented = false;
+    embedded.emit('will-navigate', { preventDefault() { prevented = true; } }, 'https://accounts.google.com/gsi/select');
+    assert.equal(prevented, true, 'bloqueia a navegação OAuth incompatível');
+    await new Promise((resolve) => setTimeout(resolve, 15));
+    assert.ok(linkDialogs.some((item) => item.message?.includes('Login do Google')));
+    // Botão direito também na UI da Sidebar.
+    windowInstance.webContents.emit('context-menu', {}, {});
+    assert.ok(nativeMenus.at(-1).some((item) => item.label === 'Configurações'));
 
     // Navegação da própria view (não compartilha histórico entre sites).
     const chatWc = windowInstance.children[0].webContents;
@@ -170,17 +223,18 @@ async function invoke(channel, ...args) {
     await assert.rejects(invoke('sidebar:navigate', 'javascript:alert(1)'), /inválida/i);
     assert.ok(sentMessages.some(({ channel }) => channel === 'sidebar:navigation-updated'));
 
-    await invoke('sidebar:set-panel-width', 600, true);
-    assert.equal(windowInstance.bounds.width, 668);
+    await invoke('sidebar:set-panel-width', 1200, true);
+    assert.equal(windowInstance.bounds.width, 1268);
     assert.equal(windowInstance.bounds.x + windowInstance.bounds.width, 1904, 'preservar borda direita ao redimensionar');
-    assert.equal(windowInstance.children[0].bounds.width, 600);
+    assert.equal(windowInstance.children[0].bounds.width, 1200);
+    assert.equal(readState().window.panelWidth, 1200, 'permitir valores > 780px');
 
     await invoke('sidebar:toggle-expanded');
     assert.equal(windowInstance.bounds.width, 60);
     assert.equal(windowInstance.bounds.x + windowInstance.bounds.width, 1904);
     assert.equal(windowInstance.children.length, 0, 'view não deve cobrir barra recolhida');
     await invoke('sidebar:toggle-expanded');
-    assert.equal(windowInstance.bounds.width, 668);
+    assert.equal(windowInstance.bounds.width, 1268);
     assert.equal(windowInstance.children.length, 1);
 
     await invoke('sidebar:set-settings-open', true);
@@ -221,6 +275,34 @@ async function invoke(channel, ...args) {
     assert.equal(readState().window.panelWidth, 540);
     assert.equal(windowInstance.bounds.width, 608);
 
+    // Audio must survive LRU eviction even after switching to many sites.
+    await invoke('sidebar:select-site', 'test-1');
+    const music = sandbox.__sidebarTest.viewEntries.get('test-1').view.webContents;
+    music.audible = true;
+    music.emit('audio-state-changed', { audible: true });
+    assert.equal(readState().sites.find((s) => s.id === 'test-1').playingAudio, true,
+      'indicador 🔊 ativado ao detectar áudio');
+    for (const id of ['test-2', 'test-3', 'test-4', 'test-5', 'test-6', 'test-7']) {
+      await invoke('sidebar:select-site', id);
+    }
+    assert.ok(sandbox.__sidebarTest.viewEntries.has('test-1'),
+      'aba tocando música não pode ser destruída pelo limite de 3');
+    assert.ok(sandbox.__sidebarTest.viewEntries.size <= 4,
+      'máximo de três abas normais além da protegida');
+    music.audible = false;
+    music.emit('audio-state-changed', { audible: false });
+    assert.ok(sandbox.__sidebarTest.viewEntries.has('test-1'),
+      'pausa breve mantém aba por 10s para buffering');
+    const audioEntry = sandbox.__sidebarTest.viewEntries.get('test-1');
+    clearTimeout(audioEntry.audioReleaseTimer);
+    audioEntry.audioReleaseTimer = null;
+    audioEntry.audioProtectedUntil = 0; // simula término de tolerância sem aguardar 10s
+    sandbox.__sidebarTest.trimViewCache();
+    assert.ok(!sandbox.__sidebarTest.viewEntries.has('test-1'),
+      'aba sem áudio volta a concorrer ao descarte LRU');
+    const renderer = fs.readFileSync(path.join(__dirname, '..', 'src', 'renderer', 'app.js'), 'utf8');
+    assert.match(renderer, /site-audio-badge/, 'renderer mostra indicador de áudio');
+
     await assert.rejects(
       ipc.get('sidebar:hide-window')({ sender: { fake: true } }),
       /não autorizada/i,
@@ -230,12 +312,13 @@ async function invoke(channel, ...args) {
     const html = fs.readFileSync(path.join(__dirname, '..', 'src', 'renderer', 'index.html'), 'utf8');
     assert.match(html, /id="dockedInput"/);
     assert.match(html, /id="reserveSpaceInput"/);
+    assert.match(html, /id="startWithWindowsInput"/);
     assert.match(html, /step="1"/);
     for (const id of ['backButton', 'forwardButton', 'reloadButton', 'navigationAddress']) {
       assert.match(html, new RegExp(`id="${id}"`));
     }
     await new Promise((resolve) => setTimeout(resolve, 450)); // aguarda gravação debounced da posição
-    console.log('OK: navegação voltar/avançar/recarregar, histórico isolado, toolbar, layout e 20 sites.');
+    console.log('OK: menus nativos, Google externo, painel 1200px, navegação e 20 sites.');
   } finally {
     fs.rmSync(temp, { recursive: true, force: true });
   }

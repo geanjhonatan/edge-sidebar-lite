@@ -68,6 +68,12 @@
             </label>
 
             <label class="toggle-row">
+              <span>Iniciar com o Windows (versão instalada)</span>
+              <input id="startWithWindowsInput" type="checkbox" />
+            </label>
+            <p id="startWithWindowsNote" class="setting-note">Disponível depois de instalar o aplicativo.</p>
+
+            <label class="toggle-row">
               <span>Fixar na borda do monitor (altura total)</span>
               <input id="dockedInput" type="checkbox" />
             </label>
@@ -95,6 +101,29 @@
               <input id="panelWidthNumber" type="number" min="320" step="1" />
             </div>
           </div>
+
+          <section class="updates-card" aria-label="Atualizações do aplicativo">
+            <div class="updates-heading">
+              <div><span class="panel-eyebrow">Atualizações</span><h2>Edge Sidebar Lite <span id="installedVersion">v—</span></h2></div>
+              <button class="secondary-button" id="checkUpdatesButton" type="button">Verificar</button>
+            </div>
+            <p id="updatesMessage" class="setting-note" role="status">Verificação de atualizações disponível.</p>
+            <label class="toggle-row"><span>Verificar novas versões automaticamente</span><input id="autoCheckUpdatesInput" type="checkbox" checked /></label>
+            <label class="toggle-row"><span>Baixar atualização automaticamente (quando assinada)</span><input id="autoDownloadUpdatesInput" type="checkbox" /></label>
+            <label class="toggle-row"><span>Instalar quando fechar (se o download estiver pronto)</span><input id="installOnQuitInput" type="checkbox" /></label>
+            <div id="newUpdateCard" class="new-update-card hidden" role="region" aria-label="Nova versão disponível">
+              <strong id="newUpdateTitle">🚀 Nova atualização</strong>
+              <p id="newUpdateNotes" class="release-notes"></p>
+              <div class="download-progress hidden" id="updateProgressWrap"><progress id="updateProgress" max="100" value="0"></progress><span id="updateProgressLabel">0%</span></div>
+              <div class="update-actions">
+                <button class="primary-button" id="downloadUpdateButton" type="button">Baixar atualização</button>
+                <button class="primary-button hidden" id="installUpdateButton" type="button">Instalar e reiniciar</button>
+                <button class="secondary-button" id="laterUpdateButton" type="button">Depois</button>
+                <button class="secondary-button" id="openReleasesButton" type="button">Ver Releases</button>
+              </div>
+              <p class="setting-note" id="updateSecurityNotice"></p>
+            </div>
+          </section>
 
           <div class="sites-header-row">
             <div>

@@ -2,6 +2,13 @@ const { contextBridge, ipcRenderer } = require('electron');
 
 contextBridge.exposeInMainWorld('sidebarAPI', {
   getState: () => ipcRenderer.invoke('sidebar:get-state'),
+  getUpdates: () => ipcRenderer.invoke('sidebar:updates-get'),
+  checkUpdates: () => ipcRenderer.invoke('sidebar:updates-check'),
+  setUpdatePreferences: (prefs) => ipcRenderer.invoke('sidebar:updates-set-preferences', prefs),
+  postponeUpdate: () => ipcRenderer.invoke('sidebar:updates-later'),
+  downloadUpdate: () => ipcRenderer.invoke('sidebar:updates-download'),
+  installUpdate: () => ipcRenderer.invoke('sidebar:updates-install'),
+  openReleases: () => ipcRenderer.invoke('sidebar:updates-open-releases'),
   navigate: (action) => ipcRenderer.invoke('sidebar:navigate', action),
   selectSite: (siteId) => ipcRenderer.invoke('sidebar:select-site', siteId),
   toggleExpanded: () => ipcRenderer.invoke('sidebar:toggle-expanded'),
@@ -16,6 +23,11 @@ contextBridge.exposeInMainWorld('sidebarAPI', {
     const listener = (_event, state) => callback(state);
     ipcRenderer.on('sidebar:state-updated', listener);
     return () => ipcRenderer.removeListener('sidebar:state-updated', listener);
+  },
+  onUpdatesState: (callback) => {
+    const listener = (_event, update) => callback(update);
+    ipcRenderer.on('sidebar:updates-state', listener);
+    return () => ipcRenderer.removeListener('sidebar:updates-state', listener);
   },
   onNavigationUpdated: (callback) => {
     const listener = (_event, navigation) => callback(navigation);
